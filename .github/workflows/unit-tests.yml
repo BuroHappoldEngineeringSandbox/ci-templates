@@ -18,7 +18,7 @@ jobs:
           dotnet-version: 6.0.x
 
       # ---------------------------------------
-      # PREPARE BHoM ASSEMBLY OUTPUT DIRECTORY
+      # PREPARE ASSEMBLY DIRECTORY FOR ALL BUILDS
       # ---------------------------------------
       - name: Set ProgramData to isolated CI path
         run: |
@@ -53,21 +53,18 @@ jobs:
         run: dotnet build C:\bhom\BHoM_Adapter\BHoM_Adapter.sln -c Release
 
       - name: Build Test_ToolKit
-        run: dotnet build C:\bhom\Test_ToolKit\Test_ToolKit.sln -c Release
+        run: dotnet build C:\bhom\Test_ToolKit\Test_Toolkit.sln -c Release
 
       # ---------------------------------------
-      # GATHER ALL ASSEMBLIES INTO A SINGLE FOLDER
+      # GATHER ALL DLLs INTO A SINGLE FOLDER
       # ---------------------------------------
-      - name: Gather Assemblies into C:\bhom\BHoM\Assemblies
+      - name: Gather Assemblies Into C:\bhom\BHoM\Assemblies
         run: |
-          Copy-Item -Recurse -Force C:\bhom\BHoM\**\bin\Release\**\*.dll C:\bhom\BHoM\Assemblies
+          Copy-Item -Recurse -Force C:\bhom\BHoM\**\bin\Release\**\*.dll        C:\bhom\BHoM\Assemblies
           Copy-Item -Recurse -Force C:\bhom\BHoM_Engine\**\bin\Release\**\*.dll C:\bhom\BHoM\Assemblies
           Copy-Item -Recurse -Force C:\bhom\BHoM_Adapter\**\bin\Release\**\*.dll C:\bhom\BHoM\Assemblies
           Copy-Item -Recurse -Force C:\bhom\Test_ToolKit\**\bin\Release\**\*.dll C:\bhom\BHoM\Assemblies
 
-  # ======================================
-  # UNIT TEST JOB
-  # ======================================
   tests:
     name: Run Unit Tests
     needs: bootstrap
@@ -94,9 +91,6 @@ jobs:
           name: bhom-test-results
           path: .ci/unit-tests/**/TestResults/*.trx
 
-  # ======================================
-  # COVERAGE JOB
-  # ======================================
   coverage:
     name: Generate Code Coverage
     needs: tests
