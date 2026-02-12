@@ -1,0 +1,140 @@
+name: BHoM Unit Tests & Coverage (with Bootstrap)
+
+on:
+  workflow_call:
+
+jobs:
+  bootstrap:
+    name: Clone & Build Required BHoM Repos
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Main Repo
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 6.0.x
+
+      # ---------------------------------------
+      # PREPARE BHoM ASSEMBLY OUTPUT DIRECTORY
+      # ---------------------------------------
+      - name: Set ProgramData to isolated CI path
+        run: |
+          echo "ProgramData=C:\bhom" | Out-File -FilePath $env:GITHUB_ENV -Append
+          New-Item -ItemType Directory -Force -Path "C:\bhom\BHoM\Assemblies" | Out-Null
+
+      # ---------------------------
+      # CLONE THE CORE BHoM REPOS
+      # ---------------------------
+      - name: Clone BHoM
+        run: git clone https://github.com/BuroHappoldEngineeringSandbox/BHoM.git C:\bhom\BHoM
+
+      - name: Clone BHoM_Engine
+        run: git clone https://github.com/BuroHappoldEngineeringSandbox/BHoM_Engine.git C:\bhom\BHoM_Engine
+
+      - name: Clone BHoM_Adapter
+        run: git clone https://github.com/BuroHappoldEngineeringSandbox/BHoM_Adapter.git C:\bhom\BHoM_Adapter
+
+      - name: Clone Test_ToolKit
+        run: git clone https://github.com/BuroHappoldEngineeringSandbox/Test_Toolkit.git C:\bhom\Test_ToolKit
+
+      # ---------------------------
+      # BUILD IN THE REQUIRED ORDER
+      # ---------------------------
+      - name: Build BHoM
+        run: dotnet build C:\bhom\BHoM\BHoM.sln -c Release
+
+      - name: Build BHoM_Engine
+        run: dotnet build C:\bhom\BHoM_Engine\BHoM_Engine.sln -c Release
+
+      - name: Build BHoM_Adapter
+        run: dotnet build C:\bhom\BHoM_Adapter\BHoM_Adapter.sln -c Release
+
+      - name: Build Test_ToolKit
+        run: dotnet build C:\bhom\Test_ToolKit\Test_ToolKit.sln -c Release
+
+      # ---------------------------------------
+      # GATHER ALL ASSEMBLIES INTO A SINGLE FOLDER
+      # ---------------------------------------
+      - name: Gather Assemblies into C:\bhom\BHoM\Assemblies
+        run: |
+          Copy-Item -Recurse -Force C:\bhom\BHoM\**\bin\Release\**\*.dll C:\bhom\BHoM\Assemblies
+          Copy-Item -Recurse -Force C:\bhom\BHoM_Engine\**\bin\Release\**\*.dll C:\bhom\BHoM\Assemblies
+          Copy-Item -Recurse -Force C:\bhom\BHoM_Adapter\**\bin\Release\**\*.dll C:\bhom\BHoM\Assemblies
+          Copy-Item -Recurse -Force C:\bhom\Test_ToolKit\**\bin\Release\**\*.dll C:\bhom\BHoM\Assemblies
+
+  # ======================================
+  # UNIT TEST JOB
+  # ======================================
+  tests:
+    name: Run Unit Tests
+    needs: bootstrap
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 6.0.x
+
+      - name: Run All Test Projects
+        working-directory: .ci/unit-tests
+        run: |
+          Get-ChildItem -Recurse -Filter *Tests.csproj |
+            ForEach-Object {
+              dotnet test $_.FullName -c Test --logger trx
+            }
+
+      - name: Upload Test Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: bhom-test-results
+          path: .ci/unit-tests/**/TestResults/*.trx
+
+  # ======================================
+  # COVERAGE JOB
+  # ======================================
+  coverage:
+    name: Generate Code Coverage
+    needs: tests
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 6.0.x
+
+      - name: Install ReportGenerator
+        run: dotnet tool install -g dotnet-reportgenerator-globaltool
+
+      - name: Run Tests With Coverage
+        working-directory: .ci/unit-tests
+        run: |
+          $results = "$PWD\_coverage"
+          New-Item -ItemType Directory -Force -Path $results | Out-Null
+
+          Get-ChildItem -Recurse -Filter *Tests.csproj |
+            ForEach-Object {
+              dotnet test $_.FullName -c Test `
+                --collect:"XPlat Code Coverage" `
+                --results-directory $results
+            }
+
+      - name: Create Coverage Report
+        working-directory: .ci/unit-tests
+        run: |
+          reportgenerator `
+            -reports:"_coverage/**/coverage.cobertura.xml" `
+            -targetdir:"coverage-report" `
+            -reporttypes:Html
+
+      - name: Upload Coverage Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-html
+          path: .ci/unit-tests/coverage-report
