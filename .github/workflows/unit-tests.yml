@@ -2,16 +2,22 @@ name: BHoM Unit Tests & Coverage (with Bootstrap)
 
 on:
   workflow_call:
+    secrets:
+      SANDBOX_READ_TOKEN:
+        required: true
+        description: "Fine-grained PAT with Contents: Read-only for sandbox repos (SSO authorized if enforced)."
 
 jobs:
   bootstrap:
     name: Clone & Build Required BHoM Repos
     runs-on: windows-latest
     permissions:
-      contents: read   # for this repo; other repos via the PAT secret
-
+      contents: read
+    defaults:
+      run:
+        shell: pwsh
     env:
-      # Root for all sandbox checkouts & artifacts INSIDE the workspace
+      # Root for all checkouts & artifacts INSIDE the workspace (no C:\ paths)
       BHOM_ROOT: ${{ github.workspace }}\bhom
       ASSEMBLIES_DIR: ${{ github.workspace }}\bhom\BHoM\Assemblies
 
@@ -24,14 +30,16 @@ jobs:
         with:
           dotnet-version: 6.0.x
 
-      # Prepare root directories under the workspace
       - name: Prepare folders
-        shell: pwsh
+        run: New-Item -ItemType Directory -Force -Path "$env:BHOM_ROOT" | Out-Null
+
+      - name: Set ProgramData to isolated CI path
         run: |
-          New-Item -ItemType Directory -Force -Path "$env:BHOM_ROOT" | Out-Null
+          # Make tools that look in %ProgramData% resolve to our workspace-local root
+          "ProgramData=$env:BHOM_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       # ---------------------------
-      # CLONE THE CORE BHoM REPOS (PRIVATE; USE PAT SECRET)
+      # CLONE THE CORE BHoM REPOS (PRIVATE; USE PAT SECRET FROM CALLER)
       # ---------------------------
       - name: Checkout BHoM
         uses: actions/checkout@v4
@@ -65,33 +73,27 @@ jobs:
       # CREATE ASSEMBLIES FOLDER (AFTER CLONE)
       # ---------------------------------------
       - name: Create Assemblies Folder
-        shell: pwsh
         run: New-Item -ItemType Directory -Force -Path "$env:ASSEMBLIES_DIR" | Out-Null
 
       # ---------------------------
       # BUILD IN THE REQUIRED ORDER
       # ---------------------------
       - name: Build BHoM
-        shell: pwsh
         run: dotnet build "$env:BHOM_ROOT\BHoM\BHoM.sln" -c Release
 
       - name: Build BHoM_Engine
-        shell: pwsh
         run: dotnet build "$env:BHOM_ROOT\BHoM_Engine\BHoM_Engine.sln" -c Release
 
       - name: Build BHoM_Adapter
-        shell: pwsh
         run: dotnet build "$env:BHOM_ROOT\BHoM_Adapter\BHoM_Adapter.sln" -c Release
 
       - name: Build Test_ToolKit
-        shell: pwsh
         run: dotnet build "$env:BHOM_ROOT\Test_ToolKit\Test_Toolkit.sln" -c Release
 
       # ---------------------------------------
       # GATHER ALL DLLs INTO A SINGLE FOLDER
       # ---------------------------------------
       - name: Gather Assemblies Into ${{ env.ASSEMBLIES_DIR }}
-        shell: pwsh
         run: |
           Copy-Item -Recurse -Force "$env:BHOM_ROOT\BHoM\**\bin\Release\**\*.dll"        "$env:ASSEMBLIES_DIR"
           Copy-Item -Recurse -Force "$env:BHOM_ROOT\BHoM_Engine\**\bin\Release\**\*.dll" "$env:ASSEMBLIES_DIR"
@@ -104,6 +106,9 @@ jobs:
     runs-on: windows-latest
     permissions:
       contents: read
+    defaults:
+      run:
+        shell: pwsh
 
     steps:
       - uses: actions/checkout@v4
@@ -113,7 +118,6 @@ jobs:
           dotnet-version: 6.0.x
 
       - name: Run All Test Projects
-        shell: pwsh
         working-directory: .ci/unit-tests
         run: |
           Get-ChildItem -Recurse -Filter *Tests.csproj |
@@ -133,6 +137,9 @@ jobs:
     runs-on: windows-latest
     permissions:
       contents: read
+    defaults:
+      run:
+        shell: pwsh
 
     steps:
       - uses: actions/checkout@v4
@@ -142,11 +149,9 @@ jobs:
           dotnet-version: 6.0.x
 
       - name: Install ReportGenerator
-        shell: pwsh
         run: dotnet tool install -g dotnet-reportgenerator-globaltool
 
       - name: Run Tests With Coverage
-        shell: pwsh
         working-directory: .ci/unit-tests
         run: |
           $results = "$PWD\_coverage"
@@ -160,7 +165,6 @@ jobs:
             }
 
       - name: Create Coverage Report
-        shell: pwsh
         working-directory: .ci/unit-tests
         run: |
           reportgenerator `
