@@ -7,11 +7,11 @@ jobs:
   bootstrap:
     name: Clone & Build Required BHoM Repos
     runs-on: windows-latest
-    env:
-        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    permissions:
+      contents: read   # for this repo; other repos are accessed via the PAT in 'token'
 
     steps:
-      - name: Checkout Main Repo
+      - name: Checkout Main Repo (this repo)
         uses: actions/checkout@v4
 
       - name: Setup .NET
@@ -23,51 +23,73 @@ jobs:
       # PREPARE ROOT DIRECTORY
       # ---------------------------------------
       - name: Set ProgramData to isolated CI path
+        shell: pwsh
         run: |
           echo "ProgramData=C:\bhom" | Out-File -FilePath $env:GITHUB_ENV -Append
           New-Item -ItemType Directory -Force -Path "C:\bhom" | Out-Null
 
       # ---------------------------
-      # CLONE THE CORE BHoM REPOS
+      # CLONE THE CORE BHoM REPOS (PRIVATE; USE PAT SECRET)
       # ---------------------------
+      - name: Checkout BHoM
+        uses: actions/checkout@v4
+        with:
+          repository: BuroHappoldEngineeringSandbox/BHoM
+          path: C:\bhom\BHoM
+          token: ${{ secrets.SANDBOX_READ_TOKEN }}
 
-      - name: Clone BHoM
-        run: git clone https://$env:GH_TOKEN@github.com/BuroHappoldEngineeringSandbox/BHoM.git C:\bhom\BHoM
+      - name: Checkout BHoM_Engine
+        uses: actions/checkout@v4
+        with:
+          repository: BuroHappoldEngineeringSandbox/BHoM_Engine
+          path: C:\bhom\BHoM_Engine
+          token: ${{ secrets.SANDBOX_READ_TOKEN }}
 
-      - name: Clone BHoM_Engine
-        run: git clone https://$env:GH_TOKEN@github.com/BuroHappoldEngineeringSandbox/BHoM_Engine.git C:\bhom\BHoM_Engine
+      - name: Checkout BHoM_Adapter
+        uses: actions/checkout@v4
+        with:
+          repository: BuroHappoldEngineeringSandbox/BHoM_Adapter
+          path: C:\bhom\BHoM_Adapter
+          token: ${{ secrets.SANDBOX_READ_TOKEN }}
 
-      - name: Clone BHoM_Adapter
-        run: git clone https://$env:GH_TOKEN@github.com/BuroHappoldEngineeringSandbox/BHoM_Adapter.git C:\bhom\BHoM_Adapter
-
-      - name: Clone Test_ToolKit
-        run: git clone https://$env:GH_TOKEN@github.com/BuroHappoldEngineeringSandbox/Test_ToolKit.git C:\bhom\Test_ToolKit
+      - name: Checkout Test_ToolKit
+        uses: actions/checkout@v4
+        with:
+          repository: BuroHappoldEngineeringSandbox/Test_ToolKit
+          path: C:\bhom\Test_ToolKit
+          token: ${{ secrets.SANDBOX_READ_TOKEN }}
 
       # ---------------------------------------
       # CREATE ASSEMBLIES FOLDER (AFTER CLONE)
       # ---------------------------------------
       - name: Create Assemblies Folder
+        shell: pwsh
         run: New-Item -ItemType Directory -Force -Path "C:\bhom\BHoM\Assemblies" | Out-Null
 
       # ---------------------------
       # BUILD IN THE REQUIRED ORDER
       # ---------------------------
       - name: Build BHoM
+        shell: pwsh
         run: dotnet build C:\bhom\BHoM\BHoM.sln -c Release
 
       - name: Build BHoM_Engine
+        shell: pwsh
         run: dotnet build C:\bhom\BHoM_Engine\BHoM_Engine.sln -c Release
 
       - name: Build BHoM_Adapter
+        shell: pwsh
         run: dotnet build C:\bhom\BHoM_Adapter\BHoM_Adapter.sln -c Release
 
       - name: Build Test_ToolKit
+        shell: pwsh
         run: dotnet build C:\bhom\Test_ToolKit\Test_Toolkit.sln -c Release
 
       # ---------------------------------------
       # GATHER ALL DLLs INTO A SINGLE FOLDER
       # ---------------------------------------
       - name: Gather Assemblies Into C:\bhom\BHoM\Assemblies
+        shell: pwsh
         run: |
           Copy-Item -Recurse -Force C:\bhom\BHoM\**\bin\Release\**\*.dll        C:\bhom\BHoM\Assemblies
           Copy-Item -Recurse -Force C:\bhom\BHoM_Engine\**\bin\Release\**\*.dll C:\bhom\BHoM\Assemblies
@@ -78,6 +100,8 @@ jobs:
     name: Run Unit Tests
     needs: bootstrap
     runs-on: windows-latest
+    permissions:
+      contents: read
 
     steps:
       - uses: actions/checkout@v4
@@ -87,6 +111,7 @@ jobs:
           dotnet-version: 6.0.x
 
       - name: Run All Test Projects
+        shell: pwsh
         working-directory: .ci/unit-tests
         run: |
           Get-ChildItem -Recurse -Filter *Tests.csproj |
@@ -104,6 +129,8 @@ jobs:
     name: Generate Code Coverage
     needs: tests
     runs-on: windows-latest
+    permissions:
+      contents: read
 
     steps:
       - uses: actions/checkout@v4
@@ -113,9 +140,11 @@ jobs:
           dotnet-version: 6.0.x
 
       - name: Install ReportGenerator
+        shell: pwsh
         run: dotnet tool install -g dotnet-reportgenerator-globaltool
 
       - name: Run Tests With Coverage
+        shell: pwsh
         working-directory: .ci/unit-tests
         run: |
           $results = "$PWD\_coverage"
@@ -129,6 +158,7 @@ jobs:
             }
 
       - name: Create Coverage Report
+        shell: pwsh
         working-directory: .ci/unit-tests
         run: |
           reportgenerator `
