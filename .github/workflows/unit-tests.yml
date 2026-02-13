@@ -18,12 +18,12 @@ jobs:
           dotnet-version: 6.0.x
 
       # ---------------------------------------
-      # PREPARE ASSEMBLY DIRECTORY FOR ALL BUILDS
+      # PREPARE ROOT DIRECTORY
       # ---------------------------------------
       - name: Set ProgramData to isolated CI path
         run: |
           echo "ProgramData=C:\bhom" | Out-File -FilePath $env:GITHUB_ENV -Append
-          New-Item -ItemType Directory -Force -Path "C:\bhom\BHoM\Assemblies" | Out-Null
+          New-Item -ItemType Directory -Force -Path "C:\bhom" | Out-Null
 
       # ---------------------------
       # CLONE THE CORE BHoM REPOS
@@ -39,6 +39,12 @@ jobs:
 
       - name: Clone Test_ToolKit
         run: git clone https://github.com/BuroHappoldEngineeringSandbox/Test_Toolkit.git C:\bhom\Test_ToolKit
+
+      # ---------------------------------------
+      # CREATE ASSEMBLIES FOLDER (AFTER CLONE)
+      # ---------------------------------------
+      - name: Create Assemblies Folder
+        run: New-Item -ItemType Directory -Force -Path "C:\bhom\BHoM\Assemblies" | Out-Null
 
       # ---------------------------
       # BUILD IN THE REQUIRED ORDER
