@@ -30,17 +30,18 @@ jobs:
       # ---------------------------
       # CLONE THE CORE BHoM REPOS
       # ---------------------------
+
       - name: Clone BHoM
-        run: git clone https://github.com/BuroHappoldEngineeringSandbox/BHoM.git C:\bhom\BHoM
+        run: git clone https://$env:GH_TOKEN@github.com/BuroHappoldEngineeringSandbox/BHoM.git C:\bhom\BHoM
 
       - name: Clone BHoM_Engine
-        run: git clone https://github.com/BuroHappoldEngineeringSandbox/BHoM_Engine.git C:\bhom\BHoM_Engine
+        run: git clone https://$env:GH_TOKEN@github.com/BuroHappoldEngineeringSandbox/BHoM_Engine.git C:\bhom\BHoM_Engine
 
       - name: Clone BHoM_Adapter
-        run: git clone https://github.com/BuroHappoldEngineeringSandbox/BHoM_Adapter.git C:\bhom\BHoM_Adapter
+        run: git clone https://$env:GH_TOKEN@github.com/BuroHappoldEngineeringSandbox/BHoM_Adapter.git C:\bhom\BHoM_Adapter
 
       - name: Clone Test_ToolKit
-        run: git clone https://github.com/BuroHappoldEngineeringSandbox/Test_Toolkit.git C:\bhom\Test_ToolKit
+        run: git clone https://$env:GH_TOKEN@github.com/BuroHappoldEngineeringSandbox/Test_ToolKit.git C:\bhom\Test_ToolKit
 
       # ---------------------------------------
       # CREATE ASSEMBLIES FOLDER (AFTER CLONE)
