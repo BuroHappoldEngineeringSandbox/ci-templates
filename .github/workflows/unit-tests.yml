@@ -8,7 +8,12 @@ jobs:
     name: Clone & Build Required BHoM Repos
     runs-on: windows-latest
     permissions:
-      contents: read   # for this repo; other repos are accessed via the PAT in 'token'
+      contents: read   # for this repo; other repos via the PAT secret
+
+    env:
+      # Root for all sandbox checkouts & artifacts INSIDE the workspace
+      BHOM_ROOT: ${{ github.workspace }}\bhom
+      ASSEMBLIES_DIR: ${{ github.workspace }}\bhom\BHoM\Assemblies
 
     steps:
       - name: Checkout Main Repo (this repo)
@@ -19,14 +24,11 @@ jobs:
         with:
           dotnet-version: 6.0.x
 
-      # ---------------------------------------
-      # PREPARE ROOT DIRECTORY
-      # ---------------------------------------
-      - name: Set ProgramData to isolated CI path
+      # Prepare root directories under the workspace
+      - name: Prepare folders
         shell: pwsh
         run: |
-          echo "ProgramData=C:\bhom" | Out-File -FilePath $env:GITHUB_ENV -Append
-          New-Item -ItemType Directory -Force -Path "C:\bhom" | Out-Null
+          New-Item -ItemType Directory -Force -Path "$env:BHOM_ROOT" | Out-Null
 
       # ---------------------------
       # CLONE THE CORE BHoM REPOS (PRIVATE; USE PAT SECRET)
@@ -35,28 +37,28 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: BuroHappoldEngineeringSandbox/BHoM
-          path: C:\bhom\BHoM
+          path: bhom/BHoM
           token: ${{ secrets.SANDBOX_READ_TOKEN }}
 
       - name: Checkout BHoM_Engine
         uses: actions/checkout@v4
         with:
           repository: BuroHappoldEngineeringSandbox/BHoM_Engine
-          path: C:\bhom\BHoM_Engine
+          path: bhom/BHoM_Engine
           token: ${{ secrets.SANDBOX_READ_TOKEN }}
 
       - name: Checkout BHoM_Adapter
         uses: actions/checkout@v4
         with:
           repository: BuroHappoldEngineeringSandbox/BHoM_Adapter
-          path: C:\bhom\BHoM_Adapter
+          path: bhom/BHoM_Adapter
           token: ${{ secrets.SANDBOX_READ_TOKEN }}
 
       - name: Checkout Test_ToolKit
         uses: actions/checkout@v4
         with:
           repository: BuroHappoldEngineeringSandbox/Test_ToolKit
-          path: C:\bhom\Test_ToolKit
+          path: bhom/Test_ToolKit
           token: ${{ secrets.SANDBOX_READ_TOKEN }}
 
       # ---------------------------------------
@@ -64,37 +66,37 @@ jobs:
       # ---------------------------------------
       - name: Create Assemblies Folder
         shell: pwsh
-        run: New-Item -ItemType Directory -Force -Path "C:\bhom\BHoM\Assemblies" | Out-Null
+        run: New-Item -ItemType Directory -Force -Path "$env:ASSEMBLIES_DIR" | Out-Null
 
       # ---------------------------
       # BUILD IN THE REQUIRED ORDER
       # ---------------------------
       - name: Build BHoM
         shell: pwsh
-        run: dotnet build C:\bhom\BHoM\BHoM.sln -c Release
+        run: dotnet build "$env:BHOM_ROOT\BHoM\BHoM.sln" -c Release
 
       - name: Build BHoM_Engine
         shell: pwsh
-        run: dotnet build C:\bhom\BHoM_Engine\BHoM_Engine.sln -c Release
+        run: dotnet build "$env:BHOM_ROOT\BHoM_Engine\BHoM_Engine.sln" -c Release
 
       - name: Build BHoM_Adapter
         shell: pwsh
-        run: dotnet build C:\bhom\BHoM_Adapter\BHoM_Adapter.sln -c Release
+        run: dotnet build "$env:BHOM_ROOT\BHoM_Adapter\BHoM_Adapter.sln" -c Release
 
       - name: Build Test_ToolKit
         shell: pwsh
-        run: dotnet build C:\bhom\Test_ToolKit\Test_Toolkit.sln -c Release
+        run: dotnet build "$env:BHOM_ROOT\Test_ToolKit\Test_Toolkit.sln" -c Release
 
       # ---------------------------------------
       # GATHER ALL DLLs INTO A SINGLE FOLDER
       # ---------------------------------------
-      - name: Gather Assemblies Into C:\bhom\BHoM\Assemblies
+      - name: Gather Assemblies Into ${{ env.ASSEMBLIES_DIR }}
         shell: pwsh
         run: |
-          Copy-Item -Recurse -Force C:\bhom\BHoM\**\bin\Release\**\*.dll        C:\bhom\BHoM\Assemblies
-          Copy-Item -Recurse -Force C:\bhom\BHoM_Engine\**\bin\Release\**\*.dll C:\bhom\BHoM\Assemblies
-          Copy-Item -Recurse -Force C:\bhom\BHoM_Adapter\**\bin\Release\**\*.dll C:\bhom\BHoM\Assemblies
-          Copy-Item -Recurse -Force C:\bhom\Test_ToolKit\**\bin\Release\**\*.dll C:\bhom\BHoM\Assemblies
+          Copy-Item -Recurse -Force "$env:BHOM_ROOT\BHoM\**\bin\Release\**\*.dll"        "$env:ASSEMBLIES_DIR"
+          Copy-Item -Recurse -Force "$env:BHOM_ROOT\BHoM_Engine\**\bin\Release\**\*.dll" "$env:ASSEMBLIES_DIR"
+          Copy-Item -Recurse -Force "$env:BHOM_ROOT\BHoM_Adapter\**\bin\Release\**\*.dll" "$env:ASSEMBLIES_DIR"
+          Copy-Item -Recurse -Force "$env:BHOM_ROOT\Test_ToolKit\**\bin\Release\**\*.dll" "$env:ASSEMBLIES_DIR"
 
   tests:
     name: Run Unit Tests
