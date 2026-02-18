@@ -58,6 +58,7 @@ jobs:
 
       # Continue on error so coverage still generates on failed tests
       - name: Test (TRX + XPlat coverage)
+        continue-on-error: true
         run: >
           dotnet test
           --no-build
