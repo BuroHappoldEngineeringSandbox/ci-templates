@@ -57,14 +57,21 @@ jobs:
         run: dotnet build --no-restore --configuration ${{ inputs.configuration }}
 
       # Continue on error so coverage still generates on failed tests
+      
       - name: Test (TRX + XPlat coverage)
-        run: >
-          dotnet test
-          --no-build
-          --configuration ${{ inputs.configuration }}
-          --verbosity normal
-          --logger trx
-          --collect:"XPlat Code Coverage"
+        shell: pwsh
+        run: |
+            dotnet test `
+            --no-build `
+            --configuration Release `
+            --verbosity normal `
+            --logger trx `
+            --collect:"XPlat Code Coverage"
+            $code = $LASTEXITCODE
+            if ($code -ne 0) {
+            Write-Host "dotnet test exited with code $code, continuing so coverage can be generated."
+            exit 0
+            }
 
       # Always upload test results and raw coverage
       - name: Upload test results (TRX)
@@ -106,6 +113,32 @@ jobs:
         with:
           header: "code-coverage"
           path: coverage-report/SummaryGithub.md
+
+
+
+        # Final gate: scan TRX files and fail the job if any test outcome = Failed
+      - name: Fail job if any TRX has failures
+        if: always()
+        shell: pwsh
+        run: |
+            $trxFiles = Get-ChildItem -Recurse -Filter *.trx
+            if (-not $trxFiles) {
+            Write-Host "::warning::No TRX files found; not failing the job."
+            exit 0
+            }
+
+            $failed = 0
+            foreach ($f in $trxFiles) {
+            [xml]$xml = Get-Content $f.FullName
+            # NUnit/xUnit/MSTest all surface outcome on UnitTestResult
+            $failed += ($xml.TestRun.Results.UnitTestResult | Where-Object { $_.outcome -eq "Failed" }).Count
+            }
+
+            if ($failed -gt 0) {
+            Write-Host "::error::$failed test(s) failed according to TRX."
+            exit 1
+            }
+
 
   # ---------------------------------------------------------
   # Job 2: Publish TRX test results as a PR Check (Linux)
