@@ -60,7 +60,7 @@ jobs:
       - name: Test (TRX + XPlat coverage)
         continue-on-error: true
         run: >
-          dotnet test \.ci\tests\UnitTests
+          dotnet test .\.ci\tests\UnitTests
           --no-build
           --configuration ${{ inputs.configuration }}
           --verbosity normal
