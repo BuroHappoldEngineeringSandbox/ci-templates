@@ -29,12 +29,12 @@ jobs:
     runs-on: windows-latest
 
     steps:
-
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      # Cache NuGet packages for faster builds
       - name: Cache NuGet packages
         uses: actions/cache@v4
         with:
@@ -43,74 +43,64 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-nuget-
 
+      # Install .NET SDK
       - name: Setup .NET SDK
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: ${{ inputs.dotnet_version }}
 
+      # Build pipeline: restore → build → test
       - name: Restore dependencies
         run: dotnet restore
 
       - name: Build (${{ inputs.configuration }})
         run: dotnet build --no-restore --configuration ${{ inputs.configuration }}
 
-      # -------------------------
-      # RUN TESTS (deterministic)
-      # -------------------------
+      # Continue on error so coverage still generates on failed tests
       - name: Test (TRX + XPlat coverage)
-        shell: pwsh
         continue-on-error: true
-        run: |
-          $projects = Get-ChildItem ".\.ci\tests\UnitTests" -Recurse -Filter *.csproj
+        run: >
+          dotnet test \.ci\tests\UnitTests
+          --no-build
+          --configuration ${{ inputs.configuration }}
+          --verbosity normal
+          --logger trx
+          --collect:"XPlat Code Coverage"
 
-          $resultsDir = "$env:GITHUB_WORKSPACE/TestResults"
-          New-Item -ItemType Directory -Force -Path $resultsDir | Out-Null
-
-          foreach ($proj in $projects) {
-            Write-Host "Running tests for: $($proj.FullName)"
-
-            dotnet test "$($proj.FullName)" --no-build --configuration "Release" `
-              --logger "trx;LogFileName=$($proj.BaseName).trx" `
-              --results-directory "$resultsDir" `
-              --collect:"XPlat Code Coverage" `
-              -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=cobertura
-          }
-
-
-      # Upload TRX files
+      # Always upload test results and raw coverage
       - name: Upload test results (TRX)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: test-results
-          path: ${{ github.workspace }}/TestResults/*.trx
+          path: ${{ github.workspace }}/**/TestResults/**/*
 
-      # Upload raw coverage
       - name: Upload raw coverage (Cobertura XML)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: coverage
-          path: ${{ github.workspace }}/TestResults/**/coverage.cobertura.xml
+          path: ${{ github.workspace }}/**/coverage.cobertura.xml
 
-      # ReportGenerator
+      # Generate coverage summary using ReportGenerator
       - name: Install ReportGenerator
         run: dotnet tool install -g dotnet-reportgenerator-globaltool
 
       - name: Create coverage summary
-        shell: pwsh
         run: |
           reportgenerator `
-            -reports:"$env:GITHUB_WORKSPACE/TestResults/**/coverage.cobertura.xml" `
+            -reports:"**/TestResults/**/coverage.cobertura.xml" `
             -targetdir:"coverage-report" `
             -reporttypes:"MarkdownSummaryGithub;Cobertura"
 
+      # Add the Markdown summary to the GitHub job summary panel
       - name: Add coverage summary to job summary
         shell: pwsh
         run: |
           Get-Content "coverage-report/SummaryGithub.md" |
             Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
 
+      # Sticky PR comment (coverage summary)
       - name: Post coverage summary as PR comment
         if: github.event_name == 'pull_request'
         uses: marocchino/sticky-pull-request-comment@v2
@@ -127,12 +117,12 @@ jobs:
     needs: build_and_test_windows
     if: always()
     permissions:
-      checks: write
-      pull-requests: write
-      contents: read
+        checks: write
+        pull-requests: write
+        contents: read
+
 
     steps:
-
       - name: Download TRX artifacts
         uses: actions/download-artifact@v4
         with:
@@ -142,4 +132,4 @@ jobs:
       - name: Publish test results (TRX)
         uses: EnricoMi/publish-unit-test-result-action@v2.16.1
         with:
-          files: "test-results/**/*.trx"
+          trx_files: "test-results/**/*.trx"
