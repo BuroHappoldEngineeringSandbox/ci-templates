@@ -7,7 +7,7 @@ on:
         description: ".NET SDK version to use"
         required: false
         type: string
-        default: "8.x"
+        default: "9.x"
 
       configuration:
         description: "Build configuration (Default: Release)"
