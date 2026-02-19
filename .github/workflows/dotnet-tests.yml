@@ -86,6 +86,13 @@ jobs:
       - name: Install ReportGenerator
         run: dotnet tool install -g dotnet-reportgenerator-globaltool
 
+      - name: Debug list coverage files
+        shell: bash
+        run: |
+          shopt -s globstar || true
+          echo "Searching for coverage.cobertura.xml..."
+          ls -la **/TestResults/**/coverage.cobertura.xml || echo "None found"
+
       - name: Create coverage summary
         run: |
           reportgenerator `
