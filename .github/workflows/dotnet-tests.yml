@@ -57,19 +57,15 @@ jobs:
         run: dotnet build --no-restore --configuration ${{ inputs.configuration }}
 
       # Continue on error so coverage still generates on failed tests
-      - name: Test (TRX + Coverage)
-        shell: pwsh
-        run: |
-          $projects = Get-ChildItem ./.ci/tests/UnitTests -Recurse -Filter *.csproj
-
-          foreach ($proj in $projects) {
-            dotnet test $proj.FullName `
-              --no-build `
-              --configuration Release `
-              --logger "trx" `
-              --results-directory "$env:GITHUB_WORKSPACE/TestResults" `
-              --collect:"XPlat Code Coverage"
-          }
+      - name: Test (TRX + XPlat coverage)
+        continue-on-error: true
+        run: >
+          dotnet test ./.ci/tests/UnitTests
+          --no-build
+          --configuration ${{ inputs.configuration }}
+          --verbosity normal
+          --logger trx
+          --collect:"XPlat Code Coverage"
 
       # Always upload test results and raw coverage
       - name: Upload test results (TRX)
