@@ -73,7 +73,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: test-results
-          path: ${{ github.workspace }}/**/TestResults/**/*
+          path: ${{ github.workspace }}/**/TestResults/**/*.trx
 
       - name: Upload raw coverage (Cobertura XML)
         if: always()
@@ -139,4 +139,4 @@ jobs:
       - name: Publish test results (TRX)
         uses: EnricoMi/publish-unit-test-result-action@v2.16.1
         with:
-          trx_files: "test-results/**/*.trx"
+          files: "test-results/**/*.trx"
