@@ -59,6 +59,7 @@ jobs:
       # Continue on error so coverage still generates on failed tests
       - name: Test (TRX + XPlat coverage)
         continue-on-error: true
+        working-directory: ${{ github.workspace }}
         run: >
           dotnet test ./.ci/tests/UnitTests
           --no-build
