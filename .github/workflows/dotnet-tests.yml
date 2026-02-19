@@ -63,20 +63,19 @@ jobs:
         run: |
           $projects = Get-ChildItem ".\.ci\tests\UnitTests" -Recurse -Filter *.csproj
 
-          $resultsDir = "$env:GITHUB_WORKSPACE\TestResults"
+          $resultsDir = "$env:GITHUB_WORKSPACE/TestResults"
           New-Item -ItemType Directory -Force -Path $resultsDir | Out-Null
 
           foreach ($proj in $projects) {
             Write-Host "Running tests for: $($proj.FullName)"
 
-            dotnet test $proj.FullName `
-              --no-build `
-              --configuration "${{ inputs.configuration }}" `
+            dotnet test "$($proj.FullName)" --no-build --configuration "Release" `
               --logger "trx;LogFileName=$($proj.BaseName).trx" `
-              --results-directory $resultsDir `
+              --results-directory "$resultsDir" `
               --collect:"XPlat Code Coverage" `
               -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=cobertura
           }
+
 
       # Upload TRX files
       - name: Upload test results (TRX)
