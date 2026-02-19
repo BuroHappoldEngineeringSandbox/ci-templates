@@ -89,7 +89,7 @@ jobs:
       - name: Create coverage summary
         run: |
           reportgenerator `
-            -reports:"**/coverage.cobertura.xml" `
+            -reports:"./.ci/tests/UnitTests/**/coverage.cobertura.xml" `
             -targetdir:"coverage-report" `
             -reporttypes:"MarkdownSummaryGithub;Cobertura"
 
