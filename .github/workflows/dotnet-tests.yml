@@ -1,10 +1,10 @@
-name: .NET Unit Tests & Coverage (Reusable)
+name: .NET Unit Tests & Coverage
 
 on:
   workflow_call:
     inputs:
       dotnet_version:
-        description: ".NET SDK version to use"
+        description: ".NET SDK version to use (Default: 8.x)"
         required: false
         type: string
         default: "8.x"
@@ -16,7 +16,7 @@ on:
         default: "Release"
 
       test_solution:
-        description: "Path to the Unit Test solution"
+        description: "Path to the test solution file (Default: .ci/tests/UnitTests/UnitTests.sln)"
         required: false
         type: string
         default: ".ci/tests/UnitTests/UnitTests.sln"
@@ -28,11 +28,15 @@ permissions:
 jobs:
 
   # ---------------------------------------------------------
-  # Job 1: Build, test, and generate coverage on Windows
+  # Job 1: Build, test, and collect coverage on Windows
   # ---------------------------------------------------------
   build_and_test_windows:
     name: Build & Test (.NET on Windows)
     runs-on: windows-latest
+    env:
+      DOTNET_NOLOGO: true
+      DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+      DOTNET_CLI_TELEMETRY_OPTOUT: true
 
     steps:
       - name: Checkout repository
@@ -40,29 +44,28 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Cache NuGet packages for faster builds
-      - name: Cache NuGet packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.nuget/packages
-          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj') }}
-          restore-keys: |
-            ${{ runner.os }}-nuget-
-
-      # Install .NET SDK
+      # Install .NET SDK with caching for dependencies
       - name: Setup .NET SDK
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: ${{ inputs.dotnet_version }}
+          cache: true
+          cache-dependency-path: |
+            **/*.csproj
+            **/packages.lock.json
 
-      # Restore → Build → Test pipeline
+      # Ensure dotnet tools path is on PATH for ReportGenerator
+      - name: Ensure dotnet tools path is on PATH
+        shell: pwsh
+        run: echo "$env:USERPROFILE\.dotnet\tools" >> $env:GITHUB_PATH
+
+      # Restore, build, and test with coverage collection
       - name: Restore dependencies
         run: dotnet restore "${{ inputs.test_solution }}"
 
       - name: Build (${{ inputs.configuration }})
         run: dotnet build "${{ inputs.test_solution }}" --no-restore --configuration ${{ inputs.configuration }}
 
-      # Test step
       - name: Test (TRX + XPlat coverage)
         continue-on-error: true
         run: >
@@ -74,7 +77,7 @@ jobs:
           --results-directory TestResults
           --collect:"XPlat Code Coverage"
 
-      # Upload artifacts
+      # Upload test results and coverage artifacts
       - name: Upload test results (TRX)
         if: always()
         uses: actions/upload-artifact@v4
@@ -89,7 +92,7 @@ jobs:
           name: coverage
           path: "**/TestResults/**/coverage.cobertura.xml"
 
-      # Generate coverage summary using ReportGenerator
+      # Generate coverage summary and post to PR
       - name: Install ReportGenerator
         run: dotnet tool install -g dotnet-reportgenerator-globaltool
 
@@ -106,7 +109,6 @@ jobs:
           Get-Content "coverage-report/SummaryGithub.md" |
             Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
 
-      # Sticky PR comment (coverage summary)
       - name: Post coverage summary as PR comment
         if: github.event_name == 'pull_request'
         uses: marocchino/sticky-pull-request-comment@v2
@@ -115,7 +117,7 @@ jobs:
           path: coverage-report/SummaryGithub.md
 
   # ---------------------------------------------------------
-  # Job 2: Publish TRX test results as a PR Check (Linux)
+  # Job 2: Publish test results to GitHub Checks API
   # ---------------------------------------------------------
   publish_test_results_linux:
     name: Publish Unit Test Results (PR Check)
