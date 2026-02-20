@@ -15,6 +15,12 @@ on:
         type: string
         default: "Release"
 
+      test_solution:
+        description: "Path to the Unit Test solution"
+        required: false
+        type: string
+        default: ".ci/tests/UnitTests/UnitTests.sln"
+
 permissions:
   contents: write
   pull-requests: write
@@ -49,44 +55,39 @@ jobs:
         with:
           dotnet-version: ${{ inputs.dotnet_version }}
 
-      # Build pipeline: restore → build → test
+      # Restore → Build → Test pipeline
       - name: Restore dependencies
-        run: dotnet restore .\.ci\tests\UnitTests
+        run: dotnet restore "${{ inputs.test_solution }}"
 
       - name: Build (${{ inputs.configuration }})
-        run: dotnet build .\.ci\tests\UnitTests --no-restore --configuration ${{ inputs.configuration }}
+        run: dotnet build "${{ inputs.test_solution }}" --no-restore --configuration ${{ inputs.configuration }}
 
-
-      # List projects inside the solution
-      - name: Show projects in UnitTests.sln
-        shell: pwsh
-        run: dotnet sln .\.ci\tests\UnitTests\UnitTests.sln list
-
-      # Continue on error so coverage still generates on failed tests
+      # Test step
       - name: Test (TRX + XPlat coverage)
         continue-on-error: true
         run: >
-          dotnet test .\.ci\tests\UnitTests
+          dotnet test "${{ inputs.test_solution }}"
           --no-build
           --configuration ${{ inputs.configuration }}
           --verbosity normal
-          --logger trx
+          --logger "trx;LogFileName=tests.trx"
+          --results-directory TestResults
           --collect:"XPlat Code Coverage"
 
-      # Always upload test results and raw coverage
+      # Upload artifacts
       - name: Upload test results (TRX)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: test-results
-          path: ${{ github.workspace }}/**/TestResults/**/*
+          path: "**/TestResults/**/*.trx"
 
       - name: Upload raw coverage (Cobertura XML)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: coverage
-          path: ${{ github.workspace }}/**/coverage.cobertura.xml
+          path: "**/TestResults/**/coverage.cobertura.xml"
 
       # Generate coverage summary using ReportGenerator
       - name: Install ReportGenerator
@@ -99,7 +100,6 @@ jobs:
             -targetdir:"coverage-report" `
             -reporttypes:"MarkdownSummaryGithub;Cobertura"
 
-      # Add the Markdown summary to the GitHub job summary panel
       - name: Add coverage summary to job summary
         shell: pwsh
         run: |
@@ -123,10 +123,9 @@ jobs:
     needs: build_and_test_windows
     if: always()
     permissions:
-        checks: write
-        pull-requests: write
-        contents: read
-
+      checks: write
+      pull-requests: write
+      contents: read
 
     steps:
       - name: Download TRX artifacts
