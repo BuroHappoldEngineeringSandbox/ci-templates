@@ -54,7 +54,13 @@ jobs:
         run: dotnet restore
 
       - name: Build (${{ inputs.configuration }})
-        run: dotnet build --no-restore --configuration ${{ inputs.configuration }}
+        run: dotnet build .\.ci\tests\UnitTests --no-restore --configuration ${{ inputs.configuration }}
+
+
+      # List projects inside the solution
+      - name: Show projects in UnitTests.sln
+        shell: pwsh
+        run: dotnet sln .\.ci\tests\UnitTests\UnitTests.sln list
 
       # Continue on error so coverage still generates on failed tests
       - name: Test (TRX + XPlat coverage)
