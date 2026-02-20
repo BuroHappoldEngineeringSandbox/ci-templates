@@ -51,7 +51,7 @@ jobs:
 
       # Build pipeline: restore → build → test
       - name: Restore dependencies
-        run: dotnet restore
+        run: dotnet restore .\.ci\tests\UnitTests
 
       - name: Build (${{ inputs.configuration }})
         run: dotnet build .\.ci\tests\UnitTests --no-restore --configuration ${{ inputs.configuration }}
