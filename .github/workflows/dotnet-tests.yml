@@ -21,6 +21,14 @@ on:
         type: string
         default: ".ci/tests/UnitTests/UnitTests.sln"
 
+      # NEW: Simple comma-separated list of repo names in the SAME org, with optional @ref
+      # Example: "RepoA@main, RepoB, RepoC@develop"
+      dependencies:
+        description: "Comma-separated repos (same org) to clone & build in order (e.g., 'RepoA@main, RepoB, RepoC@tag')."
+        required: false
+        type: string
+        default: ""
+
 permissions:
   contents: write
   pull-requests: write
@@ -29,6 +37,7 @@ jobs:
 
   # ---------------------------------------------------------
   # Job 1: Build, test, and collect coverage on Windows
+  # (includes dependency clone/build so HintPaths resolve)
   # ---------------------------------------------------------
   build_and_test_windows:
     name: Build & Test (.NET on Windows)
@@ -44,7 +53,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Install .NET SDK with caching for dependencies
       - name: Setup .NET SDK
         uses: actions/setup-dotnet@v4
         with:
@@ -54,12 +62,84 @@ jobs:
             **/*.csproj
             **/packages.lock.json
 
+      # ---------------------------------------------------------
+      # Clone & build dependencies on the SAME runner (for HintPaths)
+      # Input format: "RepoA@main, RepoB, RepoC@v1.2.3"
+      # All repos assumed to be in the same org: ${{ github.repository_owner }}
+      # ---------------------------------------------------------
+      - name: Clone & build dependencies (ordered)
+        if: ${{ inputs.dependencies != '' }}
+        shell: pwsh
+        env:
+          ORG: ${{ github.repository_owner }}
+          CONFIG: ${{ inputs.configuration }}
+          TOKEN: ${{ github.token }}
+        run: |
+          # Ensure git uses the workflow token for same-org private repos
+          if (-not [string]::IsNullOrEmpty($env:TOKEN)) {
+            git config --global url."https://x-access-token:$($env:TOKEN)@github.com/".insteadOf "https://github.com/"
+          }
+
+          # Create a base folder for dependencies (adjust if your HintPaths expect a different root)
+          New-Item -ItemType Directory -Force -Path "deps" | Out-Null
+
+          # Split the comma-separated list and iterate in order
+          $deps = @()
+          foreach ($part in @("${{ inputs.dependencies }}".Split(","))) {
+            $trimmed = $part.Trim()
+            if ($trimmed) { $deps += $trimmed }
+          }
+
+          if ($deps.Count -eq 0) {
+            Write-Host "No dependencies parsed from input."
+            exit 0
+          }
+
+          foreach ($d in $deps) {
+            $repo = $d
+            $ref = ""
+
+            # Support optional @ref (branch/tag/sha)
+            if ($d -match "@") {
+              $parts = $d.Split("@",2)
+              $repo = $parts[0].Trim()
+              $ref  = $parts[1].Trim()
+            }
+
+            # Clone into deps/<RepoName>
+            $name = $repo  # repo here is the short repo name (same org)
+            $url = "https://github.com/$env:ORG/$repo.git"
+            $path = "deps/$name"
+
+            Write-Host "::group::Clone $repo $([string]::IsNullOrEmpty($ref) ? '' : "@$ref")"
+            git clone $url $path
+            if (-not [string]::IsNullOrEmpty($ref)) {
+              Push-Location $path
+              git fetch --all --tags
+              git checkout $ref
+              Pop-Location
+            }
+            Write-Host "::endgroup::"
+
+            # Build the first .sln found in that repo
+            $sln = Get-ChildItem $path -Recurse -Filter *.sln | Select-Object -First 1
+            if (-not $sln) {
+              Write-Warning "No .sln found in $repo — skipping build."
+              continue
+            }
+
+            Write-Host "::group::Restore & Build $repo"
+            dotnet restore $sln.FullName
+            dotnet build $sln.FullName --configuration $env:CONFIG
+            Write-Host "::endgroup::"
+          }
+
       # Ensure dotnet tools path is on PATH for ReportGenerator
       - name: Ensure dotnet tools path is on PATH
         shell: pwsh
         run: echo "$env:USERPROFILE\.dotnet\tools" >> $env:GITHUB_PATH
 
-      # Restore, build, and test with coverage collection
+      # Now that dependency binaries exist (per HintPath), proceed to restore/build/test
       - name: Restore dependencies
         run: dotnet restore "${{ inputs.test_solution }}"
 
