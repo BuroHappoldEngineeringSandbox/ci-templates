@@ -48,7 +48,8 @@ jobs:
     if: ${{ inputs.dependencies != '' }}  # Skip entirely if no dependencies
     env:
       DEFAULT_ORG: ${{ github.repository_owner }}
-      TOKEN: ${{ github.token }}
+      # Prefer a fine-grained PAT with read access to private repos; fallback to GITHUB_TOKEN.
+      TOKEN: ${{ secrets.ORG_READ_TOKEN || github.token }}
       CONFIG: ${{ inputs.configuration }}
 
     steps:
@@ -110,21 +111,29 @@ jobs:
 
             Write-Host "::group::Clone $owner/$repo $([string]::IsNullOrEmpty($ref) ? '' : "@$ref")"
             try {
-              # Shallow clone for speed; if a ref is provided (tag/sha/branch), checkout after
+              # Quick access check with helpful error if private/inaccessible
+              git ls-remote $url *> $null
+            } catch {
+              Write-Error "Cannot access $owner/$repo. Verify the repository path and that the token has 'contents: read'. For private repos across repos, provide a fine-grained PAT as secret ORG_READ_TOKEN."
+              throw
+            }
+
+            try {
+              # Shallow clone for speed
               git clone --depth 1 $url $path
             } catch {
-              Write-Error "Failed to clone $owner/$repo. Ensure the repo exists and the token has read access. Consider using a read-scoped PAT in secret ORG_READ_TOKEN."
+              Write-Error "Failed to clone $owner/$repo from $url. Check permissions (ORG_READ_TOKEN) and repo existence."
               throw
             }
 
             if (-not (Test-Path $path)) {
-              Write-Error "Clone target path not found: $path"
+              Write-Error "Clone target path not found: $path (clone failed)"
               throw
             }
 
             if (-not [string]::IsNullOrEmpty($ref)) {
               Push-Location $path
-              # fetch more history/tags only when needed for the ref
+              # Fetch additional history/tags only when needed
               git fetch --all --tags --prune
               try {
                 git checkout $ref
