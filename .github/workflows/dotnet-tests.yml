@@ -49,7 +49,7 @@ jobs:
     env:
       DEFAULT_ORG: ${{ github.repository_owner }}
       # Prefer a fine-grained PAT with read access to private repos; fallback to GITHUB_TOKEN.
-      TOKEN: ${{ secrets.SANDBOX_READ_TOKEN || github.token }}
+      TOKEN: ${{ secrets.SANDBOX_READ_TOKEN }}
       CONFIG: ${{ inputs.configuration }}
 
     steps:
