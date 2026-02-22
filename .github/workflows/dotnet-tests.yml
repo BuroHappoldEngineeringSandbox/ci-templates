@@ -21,10 +21,14 @@ on:
         type: string
         default: ".ci/tests/UnitTests/UnitTests.sln"
 
-      # NEW: Simple comma-separated list of repo names in the SAME org, with optional @ref
-      # Example: "RepoA@main, RepoB, RepoC@develop"
+      # Comma-separated list (ordered). Examples:
+      #   "RepoA@main, RepoB, OtherOrg/RepoC@v1.2.3"
+      # If no owner/org prefix is provided, we assume it belongs to this org (github.repository_owner).
       dependencies:
-        description: "Comma-separated repos (same org) to clone & build in order (e.g., 'RepoA@main, RepoB, RepoC@tag')."
+        description: >
+          Ordered, comma-separated list of repos to clone & build.
+          Supports same-org shorthand "Repo@ref" and cross-org "Owner/Repo@ref".
+          Example: "RepoA@main, RepoB, OtherOrg/RepoC@v1.2.3"
         required: false
         type: string
         default: ""
@@ -36,12 +40,130 @@ permissions:
 jobs:
 
   # ---------------------------------------------------------
+  # Job 0: Clone & build dependencies; publish assemblies artifact
+  # ---------------------------------------------------------
+  build_dependencies:
+    name: Build Dependencies
+    runs-on: windows-latest
+    if: ${{ inputs.dependencies != '' }}  # Skip entirely if no dependencies
+    env:
+      DEFAULT_ORG: ${{ github.repository_owner }}
+      TOKEN: ${{ github.token }}
+      CONFIG: ${{ inputs.configuration }}
+
+    steps:
+      - name: Configure git auth (token for private repos)
+        shell: pwsh
+        run: |
+          if (-not [string]::IsNullOrEmpty($env:TOKEN)) {
+            git config --global url."https://x-access-token:$($env:TOKEN)@github.com/".insteadOf "https://github.com/"
+          }
+
+      - name: Clone dependencies (ordered; same-org or cross-org)
+        shell: pwsh
+        env:
+          DEPENDENCIES: ${{ inputs.dependencies }}
+        run: |
+          New-Item -ItemType Directory -Force -Path "deps" | Out-Null
+
+          # Split by comma -> list in order
+          $list = @()
+          foreach ($part in @($env:DEPENDENCIES.Split(","))) {
+            $t = $part.Trim()
+            if ($t) { $list += $t }
+          }
+
+          if ($list.Count -eq 0) {
+            Write-Host "No dependencies parsed from input."
+            exit 0
+          }
+
+          foreach ($d in $list) {
+            $spec = $d
+            $ref  = ""
+
+            if ($d -match "@") {
+              $parts = $d.Split("@",2)
+              $spec  = $parts[0].Trim()
+              $ref   = $parts[1].Trim()
+            }
+
+            # If spec contains '/', it's Owner/Repo; otherwise assume default org
+            if ($spec.Contains("/")) {
+              $owner = $spec.Split("/")[0]
+              $repo  = $spec.Split("/")[1]
+            } else {
+              $owner = $env:DEFAULT_ORG
+              $repo  = $spec
+            }
+
+            $name = "$owner`_$repo"   # folder name includes owner to avoid collisions
+            $url  = "https://github.com/$owner/$repo.git"
+            $path = "deps/$name"
+
+            Write-Host "::group::Clone $owner/$repo $([string]::IsNullOrEmpty($ref) ? '' : "@$ref")"
+            git clone $url $path
+            if (-not [string]::IsNullOrEmpty($ref)) {
+              Push-Location $path
+              git fetch --all --tags
+              git checkout $ref
+              Pop-Location
+            }
+            # Record the effective commit for traceability
+            Push-Location $path
+            $sha = (git rev-parse HEAD)
+            Write-Host "Checked out $owner/$repo @ $sha"
+            Pop-Location
+            Write-Host "::endgroup::"
+          }
+
+      - name: Build dependencies
+        shell: pwsh
+        run: |
+          $repos = Get-ChildItem -Path "deps" -Directory -ErrorAction SilentlyContinue
+          foreach ($repoDir in $repos) {
+            $sln = Get-ChildItem $repoDir.FullName -Recurse -Filter *.sln -ErrorAction SilentlyContinue | Select-Object -First 1
+            if (-not $sln) {
+              Write-Warning "No .sln found in '$($repoDir.FullName)'. Skipping."
+              continue
+            }
+
+            Write-Host "::group::Restore & Build $(Split-Path -Leaf $repoDir.FullName)"
+            dotnet restore $sln.FullName
+            dotnet build $sln.FullName --configuration $env:CONFIG
+            Write-Host "::endgroup::"
+          }
+
+      - name: Collect dependency assemblies (bin/Release|Debug)
+        shell: pwsh
+        run: |
+          $out = "deps-assemblies"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+
+          # Copy *.dll produced by dependency builds from common bin folders
+          Get-ChildItem -Path "deps" -Recurse -Include *.dll -ErrorAction SilentlyContinue `
+            | Where-Object { $_.FullName -match "\\bin\\(Release|Debug)\\" } `
+            | Copy-Item -Destination $out -Force
+
+          $count = (Get-ChildItem $out -Filter *.dll -ErrorAction SilentlyContinue | Measure-Object).Count
+          Write-Host "Collected $count assemblies in '$out'."
+
+      - name: Upload assemblies artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: deps-assemblies
+          path: deps-assemblies/**
+          if-no-files-found: warn
+
+  # ---------------------------------------------------------
   # Job 1: Build, test, and collect coverage on Windows
-  # (includes dependency clone/build so HintPaths resolve)
+  # (downloads & stages assemblies so absolute HintPaths resolve)
   # ---------------------------------------------------------
   build_and_test_windows:
     name: Build & Test (.NET on Windows)
     runs-on: windows-latest
+    needs: [build_dependencies]
+    if: always()   # run even if build_dependencies was skipped (no deps)
     env:
       DOTNET_NOLOGO: true
       DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
@@ -62,85 +184,34 @@ jobs:
             **/*.csproj
             **/packages.lock.json
 
-      # ---------------------------------------------------------
-      # Clone & build dependencies on the SAME runner (for HintPaths)
-      # Input format: "RepoA@main, RepoB, RepoC@v1.2.3"
-      # All repos assumed to be in the same org: ${{ github.repository_owner }}
-      # ---------------------------------------------------------
-      - name: Clone & build dependencies (ordered)
-        if: ${{ inputs.dependencies != '' }}
+      # Download DLLs from dependencies job (if it ran)
+      - name: Download dependency assemblies
+        uses: actions/download-artifact@v4
+        with:
+          name: deps-assemblies
+          path: deps-assemblies
+        continue-on-error: true
+
+      # Stage to ProgramData\BHoM\Assemblies to satisfy absolute HintPaths like:
+      #   C:\ProgramData\BHoM\Assemblies\<Name>.dll
+      - name: Stage assemblies to %ProgramData%\BHoM\Assemblies
         shell: pwsh
-        env:
-          ORG: ${{ github.repository_owner }}
-          CONFIG: ${{ inputs.configuration }}
-          TOKEN: ${{ github.token }}
         run: |
-          # Ensure git uses the workflow token for same-org private repos
-          if (-not [string]::IsNullOrEmpty($env:TOKEN)) {
-            git config --global url."https://x-access-token:$($env:TOKEN)@github.com/".insteadOf "https://github.com/"
+          $src = "deps-assemblies"
+          if (-not (Test-Path $src)) {
+            Write-Host "No dependency assemblies artifact found (possibly no dependencies)."
+          } else {
+            $target = Join-Path $env:ProgramData "BHoM\Assemblies"
+            New-Item -ItemType Directory -Force -Path $target | Out-Null
+            Copy-Item -Path (Join-Path $src "*.dll") -Destination $target -Force -ErrorAction SilentlyContinue
+            Write-Host "Staged assemblies to $target"
           }
 
-          # Create a base folder for dependencies (adjust if your HintPaths expect a different root)
-          New-Item -ItemType Directory -Force -Path "deps" | Out-Null
-
-          # Split the comma-separated list and iterate in order
-          $deps = @()
-          foreach ($part in @("${{ inputs.dependencies }}".Split(","))) {
-            $trimmed = $part.Trim()
-            if ($trimmed) { $deps += $trimmed }
-          }
-
-          if ($deps.Count -eq 0) {
-            Write-Host "No dependencies parsed from input."
-            exit 0
-          }
-
-          foreach ($d in $deps) {
-            $repo = $d
-            $ref = ""
-
-            # Support optional @ref (branch/tag/sha)
-            if ($d -match "@") {
-              $parts = $d.Split("@",2)
-              $repo = $parts[0].Trim()
-              $ref  = $parts[1].Trim()
-            }
-
-            # Clone into deps/<RepoName>
-            $name = $repo  # repo here is the short repo name (same org)
-            $url = "https://github.com/$env:ORG/$repo.git"
-            $path = "deps/$name"
-
-            Write-Host "::group::Clone $repo $([string]::IsNullOrEmpty($ref) ? '' : "@$ref")"
-            git clone $url $path
-            if (-not [string]::IsNullOrEmpty($ref)) {
-              Push-Location $path
-              git fetch --all --tags
-              git checkout $ref
-              Pop-Location
-            }
-            Write-Host "::endgroup::"
-
-            # Build the first .sln found in that repo
-            $sln = Get-ChildItem $path -Recurse -Filter *.sln | Select-Object -First 1
-            if (-not $sln) {
-              Write-Warning "No .sln found in $repo — skipping build."
-              continue
-            }
-
-            Write-Host "::group::Restore & Build $repo"
-            dotnet restore $sln.FullName
-            dotnet build $sln.FullName --configuration $env:CONFIG
-            Write-Host "::endgroup::"
-          }
-
-      # Ensure dotnet tools path is on PATH for ReportGenerator
       - name: Ensure dotnet tools path is on PATH
         shell: pwsh
         run: echo "$env:USERPROFILE\.dotnet\tools" >> $env:GITHUB_PATH
 
-      # Now that dependency binaries exist (per HintPath), proceed to restore/build/test
-      - name: Restore dependencies
+      - name: Restore solution
         run: dotnet restore "${{ inputs.test_solution }}"
 
       - name: Build (${{ inputs.configuration }})
@@ -157,7 +228,6 @@ jobs:
           --results-directory TestResults
           --collect:"XPlat Code Coverage"
 
-      # Upload test results and coverage artifacts
       - name: Upload test results (TRX)
         if: always()
         uses: actions/upload-artifact@v4
@@ -172,7 +242,6 @@ jobs:
           name: coverage
           path: "**/TestResults/**/coverage.cobertura.xml"
 
-      # Generate coverage summary and post to PR
       - name: Install ReportGenerator
         run: dotnet tool install -g dotnet-reportgenerator-globaltool
 
