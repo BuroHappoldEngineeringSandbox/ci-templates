@@ -36,18 +36,10 @@ jobs:
     if: ${{ inputs.dependencies != '' }}
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Debug list .github/actions
-        shell: pwsh
-        run: |
-          Write-Host "PWD: $(Get-Location)"
-          if (Test-Path ".github/actions") {
-            Get-ChildItem -Recurse -Path ".github/actions" | ForEach-Object { $_.FullName }
-          } else {
-            Write-Host ".github/actions does not exist"
-          }
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.action_repository }}
+          ref: ${{ github.action_ref }}
 
       - name: Build dependencies
         uses: ./.github/actions/build-dependencies
