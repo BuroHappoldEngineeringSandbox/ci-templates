@@ -1,0 +1,132 @@
+name: Build Dependencies
+
+on:
+  workflow_call:
+    inputs:
+      configuration:
+        description: "Build configuration"
+        required: false
+        type: string
+        default: "Release"
+
+      dependencies:
+        description: >
+          Ordered, comma-separated list of repos to clone & build.
+          Supports "Repo@ref" shorthand or "Owner/Repo@ref".
+        required: false
+        type: string
+        default: ""
+
+    secrets:
+      SANDBOX_READ_TOKEN:
+        required: false
+      ORG_READ_TOKEN:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  build_dependencies:
+    name: Build Dependencies
+    runs-on: windows-latest
+    if: ${{ inputs.dependencies != '' }}
+
+    env:
+      DEFAULT_ORG: ${{ github.repository_owner }}
+      TOKEN: ${{ secrets.SANDBOX_READ_TOKEN }}
+      CONFIG: ${{ inputs.configuration }}
+
+    outputs:
+      artifact-name: deps-assemblies
+
+    steps:
+      - name: Configure git auth
+        shell: pwsh
+        run: |
+          if (-not [string]::IsNullOrEmpty($env:TOKEN)) {
+            git config --global url."https://x-access-token:$($env:TOKEN)@github.com/".insteadOf "https://github.com/"
+          }
+
+      - name: Clone dependencies
+        shell: pwsh
+        env:
+          DEPENDENCIES: ${{ inputs.dependencies }}
+          DEFAULT_ORG: ${{ github.repository_owner }}
+          TOKEN: ${{ secrets.ORG_READ_TOKEN || github.token }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item deps -ItemType Directory -Force | Out-Null
+
+          if (-not [string]::IsNullOrWhiteSpace($env:TOKEN)) {
+            git config --global url."https://x-access-token:$($env:TOKEN)@github.com/".insteadOf "https://github.com/"
+          }
+
+          $depsList = @()
+          foreach ($entry in @($env:DEPENDENCIES.Split(","))) {
+            $t = $entry.Trim()
+            if ($t) { $depsList += $t }
+          }
+
+          foreach ($d in $depsList) {
+            $spec = $d
+            $ref  = ""
+
+            if ($d -match "@") {
+              $parts = $d.Split("@",2)
+              $spec  = $parts[0].Trim()
+              $ref   = $parts[1].Trim()
+            }
+
+            if ($spec.Contains("/")) {
+              $owner = $spec.Split("/")[0]
+              $repo  = $spec.Split("/")[1]
+            } else {
+              $owner = $env:DEFAULT_ORG
+              $repo  = $spec
+            }
+
+            $folder = "$owner`_$repo"
+            $url    = "https://github.com/$owner/$repo.git"
+            $path   = "deps/$folder"
+
+            git ls-remote $url *> $null
+            git clone --depth 1 $url $path
+
+            if ($ref) {
+              Push-Location $path
+              git fetch --all --tags --prune
+              git checkout $ref
+              Pop-Location
+            }
+          }
+
+      - name: Build dependencies
+        shell: pwsh
+        env:
+          CONFIG: ${{ inputs.configuration }}
+        run: |
+          $repos = Get-ChildItem deps -Directory
+          foreach ($repoDir in $repos) {
+            $sln = Get-ChildItem $repoDir.FullName -Recurse -Filter *.sln | Select-Object -First 1
+            if ($sln) {
+              dotnet restore $sln.FullName
+              dotnet build $sln.FullName --configuration $env:CONFIG
+            }
+          }
+
+      - name: Collect DLLs
+        shell: pwsh
+        run: |
+          New-Item deps-assemblies -ItemType Directory -Force | Out-Null
+
+          Get-ChildItem deps -Recurse -Include *.dll |
+            Where-Object { $_.FullName -match "\\bin\\(Release|Debug)\\" } |
+            Copy-Item -Destination deps-assemblies -Force
+
+      - name: Upload assemblies
+        uses: actions/upload-artifact@v4
+        with:
+          name: deps-assemblies
+          path: deps-assemblies/**
+          if-no-files-found: warn
