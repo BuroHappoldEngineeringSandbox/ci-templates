@@ -4,34 +4,21 @@ on:
   workflow_call:
     inputs:
       dotnet_version:
-        description: ".NET SDK version to use (Default: 8.x)"
         required: false
         type: string
         default: "8.x"
-
       configuration:
-        description: "Build configuration (Default: Release)"
         required: false
         type: string
         default: "Release"
-
       test_solution:
-        description: "Path to the test solution file (Default: .ci/tests/UnitTests/UnitTests.sln)"
         required: false
         type: string
         default: ".ci/tests/UnitTests/UnitTests.sln"
-
-      # Comma-separated list (ordered). Examples:
-      #   "RepoA@main, RepoB, OtherOrg/RepoC@v1.2.3"
-      # If no owner/org prefix is provided, we assume it belongs to this org (github.repository_owner).
       dependencies:
-        description: >
-          Ordered, comma-separated list of repos to clone & build.
-          Supports same-org shorthand "Repo@ref" and cross-org "Owner/Repo@ref".
-          Example: "RepoA@main, RepoB, OtherOrg/RepoC@v1.2.3"
         required: false
         type: string
-        default: ""
+        default: ""   # CSV of org/repo, e.g. "my-org/libA,my-org/libB"
 
 permissions:
   contents: write
@@ -40,187 +27,92 @@ permissions:
 jobs:
 
   # ---------------------------------------------------------
-  # Job 0: Clone & build dependencies; publish assemblies artifact
+  # Job 0: Clone & Build Dependencies (no artifacts, no composites)
   # ---------------------------------------------------------
   build_dependencies:
     name: Build Dependencies
-    runs-on: windows-latest
-    if: ${{ inputs.dependencies != '' }}  # Skip entirely if no dependencies
-    env:
-      DEFAULT_ORG: ${{ github.repository_owner }}
-      # Prefer a fine-grained PAT with read access to private repos; fallback to GITHUB_TOKEN.
-      TOKEN: ${{ secrets.SANDBOX_READ_TOKEN }}
-      CONFIG: ${{ inputs.configuration }}
+    runs-on: ubuntu-latest
+    if: ${{ inputs.dependencies != '' }}
+    outputs:
+      deps_path: ${{ steps.stage.outputs.deps_path }}
 
     steps:
-      - name: Configure git auth (token for private repos)
-        shell: pwsh
+      - name: Parse and validate dependency list
+        id: parse
+        shell: bash
         run: |
-          if (-not [string]::IsNullOrEmpty($env:TOKEN)) {
-            git config --global url."https://x-access-token:$($env:TOKEN)@github.com/".insteadOf "https://github.com/"
-          }
+          deps_raw="${{ inputs.dependencies }}"
+          if [[ -z "$deps_raw" ]]; then
+            echo "No dependencies provided"; exit 1
+          fi
 
-      - name: Clone dependencies (ordered; same-org or cross-org)
-        shell: pwsh
-        env:
-          DEPENDENCIES: ${{ inputs.dependencies }}
-          DEFAULT_ORG: ${{ github.repository_owner }}
-          TOKEN: ${{ secrets.ORG_READ_TOKEN || github.token }}
+          IFS=',' read -ra deps <<< "$deps_raw"
+          valid=()
+          for d in "${deps[@]}"; do
+            clean="$(echo "$d" | xargs)"
+            if [[ ! "$clean" =~ ^[^/]+/[^/]+$ ]]; then
+              echo "Invalid dependency format: '$clean' (expected org/repo)"; exit 1
+            fi
+            valid+=("$clean")
+          done
+
+          echo "deps_list=${valid[*]}" >> "$GITHUB_OUTPUT"
+
+      - name: Clone dependency repos (public)
+        shell: bash
         run: |
-          $ErrorActionPreference = "Stop"
-          New-Item -ItemType Directory -Force -Path "deps" | Out-Null
+          mkdir -p deps-src
+          for repo in ${{ steps.parse.outputs.deps_list }}; do
+            echo "Cloning $repo"
+            git clone --depth 1 "https://github.com/$repo" "deps-src/${repo//\//-}" || {
+              echo "Failed to clone $repo"; exit 1; }
+          done
 
-          if (-not [string]::IsNullOrWhiteSpace($env:TOKEN)) {
-            git config --global url."https://x-access-token:$($env:TOKEN)@github.com/".insteadOf "https://github.com/"
-          }
-
-          # Split by comma -> list in order
-          $list = @()
-          foreach ($part in @($env:DEPENDENCIES.Split(","))) {
-            $t = $part.Trim()
-            if ($t) { $list += $t }
-          }
-
-          if ($list.Count -eq 0) {
-            Write-Host "No dependencies parsed from input."
-            exit 0
-          }
-
-          foreach ($d in $list) {
-            $spec = $d
-            $ref  = ""
-
-            if ($d -match "@") {
-              $parts = $d.Split("@",2)
-              $spec  = $parts[0].Trim()
-              $ref   = $parts[1].Trim()
-            }
-
-            # If spec contains '/', it's Owner/Repo; otherwise assume default org
-            if ($spec.Contains("/")) {
-              $owner = $spec.Split("/")[0]
-              $repo  = $spec.Split("/")[1]
-            } else {
-              $owner = $env:DEFAULT_ORG
-              $repo  = $spec
-            }
-
-            $folder = "$owner`_$repo" # safe unique folder
-            $url    = "https://github.com/$owner/$repo.git"
-            $path   = "deps/$folder"
-
-            Write-Host "::group::Clone $owner/$repo $([string]::IsNullOrEmpty($ref) ? '' : "@$ref")"
-            try {
-              # Quick access check with helpful error if private/inaccessible
-              git ls-remote $url *> $null
-            } catch {
-              Write-Error "Cannot access $owner/$repo. Verify the repository path and that the token has 'contents: read'. For private repos across repos, provide a fine-grained PAT as secret ORG_READ_TOKEN."
-              throw
-            }
-
-            try {
-              # Shallow clone for speed
-              git clone --depth 1 $url $path
-            } catch {
-              Write-Error "Failed to clone $owner/$repo from $url. Check permissions (ORG_READ_TOKEN) and repo existence."
-              throw
-            }
-
-            if (-not (Test-Path $path)) {
-              Write-Error "Clone target path not found: $path (clone failed)"
-              throw
-            }
-
-            if (-not [string]::IsNullOrEmpty($ref)) {
-              Push-Location $path
-              # Fetch additional history/tags only when needed
-              git fetch --all --tags --prune
-              try {
-                git checkout $ref
-              } catch {
-                Write-Error "Failed to checkout ref '$ref' in $owner/$repo. Verify the branch/tag/SHA exists and is accessible."
-                throw
-              }
-              Pop-Location
-            }
-
-            # Record the effective commit for traceability
-            Push-Location $path
-            $sha = (git rev-parse HEAD)
-            Write-Host "Checked out $owner/$repo @ $sha into $path"
-            Pop-Location
-            Write-Host "::endgroup::"
-          }
-
-      - name: Build dependencies
-        shell: pwsh
-        env:
-          CONFIG: ${{ inputs.configuration }}
+      - name: Build dependencies (auto-discover .sln)
+        shell: bash
         run: |
-          $ErrorActionPreference = "Stop"
+          for dir in deps-src/*; do
+            echo "Building dependency in $dir"
+            sln=$(find "$dir" -maxdepth 2 -name "*.sln" | head -n 1)
+            if [[ -z "$sln" ]]; then
+              echo "No .sln found in $dir"; exit 1
+            fi
+            dotnet restore "$sln"
+            dotnet build "$sln" --configuration "${{ inputs.configuration }}" --no-restore
+          done
 
-          $repos = Get-ChildItem -Path "deps" -Directory -ErrorAction SilentlyContinue
-          if (-not $repos -or $repos.Count -eq 0) {
-            Write-Host "No cloned repositories under 'deps'. Nothing to build."
-            exit 0
-          }
-
-          foreach ($repoDir in $repos) {
-            $sln = Get-ChildItem $repoDir.FullName -Recurse -Filter *.sln -ErrorAction SilentlyContinue | Select-Object -First 1
-            if (-not $sln) {
-              Write-Warning "No .sln found in '$($repoDir.FullName)'. Skipping."
-              continue
-            }
-
-            Write-Host "::group::Restore & Build $(Split-Path -Leaf $repoDir.FullName)"
-            dotnet restore $sln.FullName
-            dotnet build $sln.FullName --configuration $env:CONFIG
-            Write-Host "::endgroup::"
-          }
-
-      - name: Collect dependency assemblies (bin/Release|Debug)
-        shell: pwsh
+      - name: Stage compiled outputs (DLL/PDB/XML from bin/<Configuration>)
+        id: stage
+        shell: bash
         run: |
-          $out = "deps-assemblies"
-          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          out="$PWD/deps"
+          mkdir -p "$out"
+          # Copy only from bin/<Configuration> to avoid noise
+          find deps-src -type d -path "*bin/${{ inputs.configuration }}*" | while read folder; do
+            cp -v "$folder"/*.dll "$out" 2>/dev/null || true
+            cp -v "$folder"/*.pdb "$out" 2>/dev/null || true
+            cp -v "$folder"/*.xml "$out" 2>/dev/null || true
+          done
 
-          # Copy *.dll produced by dependency builds from common bin folders
-          Get-ChildItem -Path "deps" -Recurse -Include *.dll -ErrorAction SilentlyContinue `
-            | Where-Object { $_.FullName -match "\\bin\\(Release|Debug)\\" } `
-            | Copy-Item -Destination $out -Force
-
-          $count = (Get-ChildItem $out -Filter *.dll -ErrorAction SilentlyContinue | Measure-Object).Count
-          Write-Host "Collected $count assemblies in '$out'."
-
-      - name: Upload assemblies artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: deps-assemblies
-          path: deps-assemblies/**
-          if-no-files-found: warn
+          echo "deps_path=$out" >> "$GITHUB_OUTPUT"
 
   # ---------------------------------------------------------
-  # Job 1: Build, test, and collect coverage on Windows
-  # (downloads & stages assemblies so absolute HintPaths resolve)
+  # Job 1: Windows Build, Test & Coverage
+  # (Everything from PATH onward remains exactly as-is)
   # ---------------------------------------------------------
   build_and_test_windows:
     name: Build & Test (.NET on Windows)
     runs-on: windows-latest
     needs: [build_dependencies]
-    if: always()   # run even if build_dependencies was skipped (no deps)
-    env:
-      DOTNET_NOLOGO: true
-      DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
-      DOTNET_CLI_TELEMETRY_OPTOUT: true
+    # Run if dependencies succeeded OR if there were no dependencies at all
+    if: ${{ (needs.build_dependencies.result == 'success') || (inputs.dependencies == '') }}
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Setup .NET SDK
-        uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: ${{ inputs.dotnet_version }}
           cache: true
@@ -228,29 +120,20 @@ jobs:
             **/*.csproj
             **/packages.lock.json
 
-      # Download DLLs from dependencies job (if it ran)
-      - name: Download dependency assemblies
-        uses: actions/download-artifact@v4
-        with:
-          name: deps-assemblies
-          path: deps-assemblies
-        continue-on-error: true
-
-      # Stage to ProgramData\BHoM\Assemblies to satisfy absolute HintPaths like:
-      #   C:\ProgramData\BHoM\Assemblies\<Name>.dll
-      - name: Stage assemblies to %ProgramData%\BHoM\Assemblies
+      # Make dependency assemblies available where downstream projects expect them
+      - name: Inject dependency assemblies
+        if: ${{ needs.build_dependencies.outputs.deps_path != '' }}
         shell: pwsh
         run: |
-          $src = "deps-assemblies"
-          if (-not (Test-Path $src)) {
-            Write-Host "No dependency assemblies artifact found (possibly no dependencies)."
-          } else {
-            $target = Join-Path $env:ProgramData "BHoM\Assemblies"
-            New-Item -ItemType Directory -Force -Path $target | Out-Null
-            Copy-Item -Path (Join-Path $src "*.dll") -Destination $target -Force -ErrorAction SilentlyContinue
-            Write-Host "Staged assemblies to $target"
-          }
+          $src = "${{ needs.build_dependencies.outputs.deps_path }}"
+          $dest = "C:\ProgramData\BHoM\Assemblies"
+          Write-Host "Copying assemblies from $src to $dest"
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          Copy-Item "$src\*.dll" $dest -Force -ErrorAction SilentlyContinue
+          Copy-Item "$src\*.pdb" $dest -Force -ErrorAction SilentlyContinue
+          Copy-Item "$src\*.xml" $dest -Force -ErrorAction SilentlyContinue
 
+      # --- SAME TEST STEPS AS BEFORE ---
       - name: Ensure dotnet tools path is on PATH
         shell: pwsh
         run: echo "$env:USERPROFILE\.dotnet\tools" >> $env:GITHUB_PATH
@@ -261,25 +144,24 @@ jobs:
       - name: Build (${{ inputs.configuration }})
         run: dotnet build "${{ inputs.test_solution }}" --no-restore --configuration ${{ inputs.configuration }}
 
-      - name: Test (TRX + XPlat coverage)
+      - name: Test (TRX + coverage)
         continue-on-error: true
         run: >
           dotnet test "${{ inputs.test_solution }}"
           --no-build
           --configuration ${{ inputs.configuration }}
-          --verbosity normal
           --logger "trx;LogFileName=tests.trx"
           --results-directory TestResults
           --collect:"XPlat Code Coverage"
 
-      - name: Upload test results (TRX)
+      - name: Upload TRX
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: test-results
           path: "**/TestResults/**/*.trx"
 
-      - name: Upload raw coverage (Cobertura XML)
+      - name: Upload Coverage XML
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -296,13 +178,13 @@ jobs:
             -targetdir:"coverage-report" `
             -reporttypes:"MarkdownSummaryGithub;Cobertura"
 
-      - name: Add coverage summary to job summary
+      - name: Add summary to job
         shell: pwsh
         run: |
           Get-Content "coverage-report/SummaryGithub.md" |
-            Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
 
-      - name: Post coverage summary as PR comment
+      - name: PR comment
         if: github.event_name == 'pull_request'
         uses: marocchino/sticky-pull-request-comment@v2
         with:
@@ -310,10 +192,9 @@ jobs:
           path: coverage-report/SummaryGithub.md
 
   # ---------------------------------------------------------
-  # Job 2: Publish test results to GitHub Checks API
+  # Job 2: Publish TRX to Checks API
   # ---------------------------------------------------------
   publish_test_results_linux:
-    name: Publish Unit Test Results (PR Check)
     runs-on: ubuntu-latest
     needs: build_and_test_windows
     if: always()
@@ -323,13 +204,11 @@ jobs:
       contents: read
 
     steps:
-      - name: Download TRX artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           name: test-results
           path: test-results
 
-      - name: Publish test results (TRX)
-        uses: EnricoMi/publish-unit-test-result-action@v2.16.1
+      - uses: EnricoMi/publish-unit-test-result-action@v2.16.1
         with:
           trx_files: "test-results/**/*.trx"
