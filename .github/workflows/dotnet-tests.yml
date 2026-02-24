@@ -38,7 +38,7 @@ jobs:
     runs-on: windows-latest
     if: inputs.dependencies != ''
     steps:
-      - uses: your-org/your-workflows-repo/.github/actions/clone-deps@v1
+      - uses: ./.github/actions/clone-deps@v1
         with:
           dependencies: ${{ inputs.dependencies }}
           configuration: ${{ inputs.configuration }}
@@ -58,9 +58,9 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: your-org/your-workflows-repo/.github/actions/stage-assemblies@v1
+      - uses: ./.github/actions/stage-assemblies
 
-      - uses: your-org/your-workflows-repo/.github/actions/dotnet-test@v1
+      - uses: ./.github/actions/dotnet-test@v1
         with:
           solution: ${{ inputs.test_solution }}
           configuration: ${{ inputs.configuration }}
