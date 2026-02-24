@@ -38,7 +38,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          repository: ${{ github.action_repository }}
+          repository: BuroHappoldEngineeringSandbox/ci-templates
           ref: ${{ github.action_ref }}
 
       - name: Debug list .github/actions
