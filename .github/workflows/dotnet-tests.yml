@@ -1,4 +1,4 @@
-name: .NET Unit Tests & Coverage
+name: Run Tests & Coverage
 
 on:
   workflow_call:
@@ -7,18 +7,16 @@ on:
         required: false
         type: string
         default: "8.x"
+
       configuration:
         required: false
         type: string
         default: "Release"
+
       test_solution:
         required: false
         type: string
         default: ".ci/tests/UnitTests/UnitTests.sln"
-      dependencies:
-        required: false
-        type: string
-        default: ""   # CSV of org/repo, e.g. "my-org/libA,my-org/libB"
 
 permissions:
   contents: write
@@ -26,91 +24,12 @@ permissions:
 
 jobs:
 
-  # ---------------------------------------------------------
-  # Job 0: Clone & Build Dependencies (no artifacts, no composites)
-  # ---------------------------------------------------------
-  build_dependencies:
-    name: Build Dependencies
-    runs-on: ubuntu-latest
-    if: ${{ inputs.dependencies != '' }}
-    outputs:
-      deps_path: ${{ steps.stage.outputs.deps_path }}
-
-    steps:
-      - name: Parse and validate dependency list
-        id: parse
-        shell: bash
-        run: |
-          deps_raw="${{ inputs.dependencies }}"
-          if [[ -z "$deps_raw" ]]; then
-            echo "No dependencies provided"; exit 1
-          fi
-
-          IFS=',' read -ra deps <<< "$deps_raw"
-          valid=()
-          for d in "${deps[@]}"; do
-            clean="$(echo "$d" | xargs)"
-            if [[ ! "$clean" =~ ^[^/]+/[^/]+$ ]]; then
-              echo "Invalid dependency format: '$clean' (expected org/repo)"; exit 1
-            fi
-            valid+=("$clean")
-          done
-
-          echo "deps_list=${valid[*]}" >> "$GITHUB_OUTPUT"
-
-      - name: Clone dependency repos (public)
-        shell: bash
-        run: |
-          mkdir -p deps-src
-          for repo in ${{ steps.parse.outputs.deps_list }}; do
-            echo "Cloning $repo"
-            git clone --depth 1 "https://github.com/$repo" "deps-src/${repo//\//-}" || {
-              echo "Failed to clone $repo"; exit 1; }
-          done
-
-      - name: Build dependencies (auto-discover .sln)
-        shell: bash
-        run: |
-          for dir in deps-src/*; do
-            echo "Building dependency in $dir"
-            sln=$(find "$dir" -maxdepth 2 -name "*.sln" | head -n 1)
-            if [[ -z "$sln" ]]; then
-              echo "No .sln found in $dir"; exit 1
-            fi
-            dotnet restore "$sln"
-            dotnet build "$sln" --configuration "${{ inputs.configuration }}" --no-restore
-          done
-
-      - name: Stage compiled outputs (DLL/PDB/XML from bin/<Configuration>)
-        id: stage
-        shell: bash
-        run: |
-          out="$PWD/deps"
-          mkdir -p "$out"
-          # Copy only from bin/<Configuration> to avoid noise
-          find deps-src -type d -path "*bin/${{ inputs.configuration }}*" | while read folder; do
-            cp -v "$folder"/*.dll "$out" 2>/dev/null || true
-            cp -v "$folder"/*.pdb "$out" 2>/dev/null || true
-            cp -v "$folder"/*.xml "$out" 2>/dev/null || true
-          done
-
-          echo "deps_path=$out" >> "$GITHUB_OUTPUT"
-
-  # ---------------------------------------------------------
-  # Job 1: Windows Build, Test & Coverage
-  # (Everything from PATH onward remains exactly as-is)
-  # ---------------------------------------------------------
   build_and_test_windows:
-    name: Build & Test (.NET on Windows)
+    name: Build & Test (.NET)
     runs-on: windows-latest
-    needs: [build_dependencies]
-    # Run if dependencies succeeded OR if there were no dependencies at all
-    if: ${{ (needs.build_dependencies.result == 'success') || (inputs.dependencies == '') }}
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - uses: actions/setup-dotnet@v4
         with:
@@ -120,31 +39,34 @@ jobs:
             **/*.csproj
             **/packages.lock.json
 
-      # Make dependency assemblies available where downstream projects expect them
-      - name: Inject dependency assemblies
-        if: ${{ needs.build_dependencies.outputs.deps_path != '' }}
+      - name: Download dependency assemblies
+        uses: actions/download-artifact@v4
+        with:
+          name: deps-assemblies
+          path: deps-assemblies
+
+      - name: Stage assemblies to ProgramData BHoM folder
         shell: pwsh
         run: |
-          $src = "${{ needs.build_dependencies.outputs.deps_path }}"
-          $dest = "C:\ProgramData\BHoM\Assemblies"
-          Write-Host "Copying assemblies from $src to $dest"
-          New-Item -ItemType Directory -Force -Path $dest | Out-Null
-          Copy-Item "$src\*.dll" $dest -Force -ErrorAction SilentlyContinue
-          Copy-Item "$src\*.pdb" $dest -Force -ErrorAction SilentlyContinue
-          Copy-Item "$src\*.xml" $dest -Force -ErrorAction SilentlyContinue
+          if (Test-Path "deps-assemblies") {
+            $dest = "C:\ProgramData\BHoM\Assemblies"
+            New-Item $dest -ItemType Directory -Force | Out-Null
 
-      # --- SAME TEST STEPS AS BEFORE ---
+            Copy-Item "deps-assemblies\*.dll" $dest -Force -ErrorAction SilentlyContinue
+          }
+
+      # --- UNCHANGED TEST STEPS ---
       - name: Ensure dotnet tools path is on PATH
         shell: pwsh
         run: echo "$env:USERPROFILE\.dotnet\tools" >> $env:GITHUB_PATH
 
-      - name: Restore solution
+      - name: Restore
         run: dotnet restore "${{ inputs.test_solution }}"
 
-      - name: Build (${{ inputs.configuration }})
+      - name: Build
         run: dotnet build "${{ inputs.test_solution }}" --no-restore --configuration ${{ inputs.configuration }}
 
-      - name: Test (TRX + coverage)
+      - name: Test
         continue-on-error: true
         run: >
           dotnet test "${{ inputs.test_solution }}"
@@ -154,16 +76,14 @@ jobs:
           --results-directory TestResults
           --collect:"XPlat Code Coverage"
 
-      - name: Upload TRX
+      - uses: actions/upload-artifact@v4
         if: always()
-        uses: actions/upload-artifact@v4
         with:
           name: test-results
           path: "**/TestResults/**/*.trx"
 
-      - name: Upload Coverage XML
+      - uses: actions/upload-artifact@v4
         if: always()
-        uses: actions/upload-artifact@v4
         with:
           name: coverage
           path: "**/TestResults/**/coverage.cobertura.xml"
@@ -178,11 +98,11 @@ jobs:
             -targetdir:"coverage-report" `
             -reporttypes:"MarkdownSummaryGithub;Cobertura"
 
-      - name: Add summary to job
+      - name: Add summary
         shell: pwsh
         run: |
           Get-Content "coverage-report/SummaryGithub.md" |
-          Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            Out-File -Append -FilePath $env:GITHUB_STEP_SUMMARY
 
       - name: PR comment
         if: github.event_name == 'pull_request'
@@ -191,10 +111,9 @@ jobs:
           header: "code-coverage"
           path: coverage-report/SummaryGithub.md
 
-  # ---------------------------------------------------------
-  # Job 2: Publish TRX to Checks API
-  # ---------------------------------------------------------
+
   publish_test_results_linux:
+    name: Publish Test Results (Checks API)
     runs-on: ubuntu-latest
     needs: build_and_test_windows
     if: always()
