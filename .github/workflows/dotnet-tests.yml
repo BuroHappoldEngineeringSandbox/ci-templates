@@ -1,6 +1,5 @@
 name: .NET Unit Tests & Coverage
 
-# SAME INPUTS / PERMISSIONS ---------------------------------
 on:
   workflow_call:
     inputs:
@@ -19,7 +18,7 @@ on:
       dependencies:
         required: false
         type: string
-        default: ""
+        default: ""   # CSV of org/repo, e.g. "my-org/libA,my-org/libB"
 
 permissions:
   contents: write
@@ -28,52 +27,85 @@ permissions:
 jobs:
 
   # ---------------------------------------------------------
-  # Job 0: Clone & build dependencies using composite action
+  # Job 0: Clone & Build Dependencies (no artifacts, no composites)
   # ---------------------------------------------------------
   build_dependencies:
     name: Build Dependencies
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     if: ${{ inputs.dependencies != '' }}
+    outputs:
+      deps_path: ${{ steps.stage.outputs.deps_path }}
 
     steps:
-      - uses: actions/checkout@v4
-        with:
-          repository: BuroHappoldEngineeringSandbox/ci-templates
-          ref: 'main'
-          token: ${{ secrets.SANDBOX_READ_TOKEN }}
-
-      - name: Debug list .github/actions
-        shell: pwsh
+      - name: Parse and validate dependency list
+        id: parse
+        shell: bash
         run: |
-          Write-Host "PWD: $(Get-Location)"
-          if (Test-Path ".github/actions") {
-            Get-ChildItem -Recurse -Path ".github/actions" | ForEach-Object { $_.FullName }
-          } else {
-            Write-Host ".github/actions does not exist"
-          }
+          deps_raw="${{ inputs.dependencies }}"
+          if [[ -z "$deps_raw" ]]; then
+            echo "No dependencies provided"; exit 1
+          fi
 
-      - name: Build dependencies
-        uses: ./.github/actions/build-dependencies
-        with:
-          dependencies: ${{ inputs.dependencies }}
-          configuration: ${{ inputs.configuration }}
-          token: ${{ secrets.SANDBOX_READ_TOKEN }}
-          default_org: ${{ github.repository_owner }}
+          IFS=',' read -ra deps <<< "$deps_raw"
+          valid=()
+          for d in "${deps[@]}"; do
+            clean="$(echo "$d" | xargs)"
+            if [[ ! "$clean" =~ ^[^/]+/[^/]+$ ]]; then
+              echo "Invalid dependency format: '$clean' (expected org/repo)"; exit 1
+            fi
+            valid+=("$clean")
+          done
 
-      - name: Upload assemblies artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: deps-assemblies
-          path: deps-assemblies
+          echo "deps_list=${valid[*]}" >> "$GITHUB_OUTPUT"
+
+      - name: Clone dependency repos (public)
+        shell: bash
+        run: |
+          mkdir -p deps-src
+          for repo in ${{ steps.parse.outputs.deps_list }}; do
+            echo "Cloning $repo"
+            git clone --depth 1 "https://github.com/$repo" "deps-src/${repo//\//-}" || {
+              echo "Failed to clone $repo"; exit 1; }
+          done
+
+      - name: Build dependencies (auto-discover .sln)
+        shell: bash
+        run: |
+          for dir in deps-src/*; do
+            echo "Building dependency in $dir"
+            sln=$(find "$dir" -maxdepth 2 -name "*.sln" | head -n 1)
+            if [[ -z "$sln" ]]; then
+              echo "No .sln found in $dir"; exit 1
+            fi
+            dotnet restore "$sln"
+            dotnet build "$sln" --configuration "${{ inputs.configuration }}" --no-restore
+          done
+
+      - name: Stage compiled outputs (DLL/PDB/XML from bin/<Configuration>)
+        id: stage
+        shell: bash
+        run: |
+          out="$PWD/deps"
+          mkdir -p "$out"
+          # Copy only from bin/<Configuration> to avoid noise
+          find deps-src -type d -path "*bin/${{ inputs.configuration }}*" | while read folder; do
+            cp -v "$folder"/*.dll "$out" 2>/dev/null || true
+            cp -v "$folder"/*.pdb "$out" 2>/dev/null || true
+            cp -v "$folder"/*.xml "$out" 2>/dev/null || true
+          done
+
+          echo "deps_path=$out" >> "$GITHUB_OUTPUT"
 
   # ---------------------------------------------------------
   # Job 1: Windows Build, Test & Coverage
+  # (Everything from PATH onward remains exactly as-is)
   # ---------------------------------------------------------
   build_and_test_windows:
     name: Build & Test (.NET on Windows)
     runs-on: windows-latest
     needs: [build_dependencies]
-    if: always()
+    # Run if dependencies succeeded OR if there were no dependencies at all
+    if: ${{ (needs.build_dependencies.result == 'success') || (inputs.dependencies == '') }}
 
     steps:
       - uses: actions/checkout@v4
@@ -88,9 +120,18 @@ jobs:
             **/*.csproj
             **/packages.lock.json
 
-      # NEW: Composite action replaces download + staging logic
-      - name: Stage dependency assemblies
-        uses: ./.github/actions/use-dependencies
+      # Make dependency assemblies available where downstream projects expect them
+      - name: Inject dependency assemblies
+        if: ${{ needs.build_dependencies.outputs.deps_path != '' }}
+        shell: pwsh
+        run: |
+          $src = "${{ needs.build_dependencies.outputs.deps_path }}"
+          $dest = "C:\ProgramData\BHoM\Assemblies"
+          Write-Host "Copying assemblies from $src to $dest"
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          Copy-Item "$src\*.dll" $dest -Force -ErrorAction SilentlyContinue
+          Copy-Item "$src\*.pdb" $dest -Force -ErrorAction SilentlyContinue
+          Copy-Item "$src\*.xml" $dest -Force -ErrorAction SilentlyContinue
 
       # --- SAME TEST STEPS AS BEFORE ---
       - name: Ensure dotnet tools path is on PATH
@@ -141,7 +182,7 @@ jobs:
         shell: pwsh
         run: |
           Get-Content "coverage-report/SummaryGithub.md" |
-            Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
 
       - name: PR comment
         if: github.event_name == 'pull_request'
