@@ -38,7 +38,7 @@ jobs:
     runs-on: windows-latest
     if: inputs.dependencies != ''
     steps:
-      - uses: BuroHappoldEngineeringSandbox/ci-templates/.github/clone-deps
+      - uses: BuroHappoldEngineeringSandbox/ci-templates/.github/actions/clone-deps
         with:
           dependencies: ${{ inputs.dependencies }}
           configuration: ${{ inputs.configuration }}
@@ -58,9 +58,9 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: BuroHappoldEngineeringSandbox/ci-templates/.github/stage-assemblies
+      - uses: BuroHappoldEngineeringSandbox/ci-templates/.github/actions/stage-assemblies
 
-      - uses: BuroHappoldEngineeringSandbox/ci-templates/.github/dotnet-test
+      - uses: BuroHappoldEngineeringSandbox/ci-templates/.github/actions/dotnet-test
         with:
           solution: ${{ inputs.test_solution }}
           configuration: ${{ inputs.configuration }}
