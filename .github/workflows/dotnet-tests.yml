@@ -40,6 +40,7 @@ jobs:
         with:
           repository: BuroHappoldEngineeringSandbox/ci-templates
           ref: ${{ github.action_ref || 'main' }}
+          token: ${{ secrets.SANDBOX_READ_TOKEN }}
 
       - name: Debug list .github/actions
         shell: pwsh
