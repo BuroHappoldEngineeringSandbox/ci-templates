@@ -1,54 +1,86 @@
-name: "Prepare .NET dependency assemblies"
-description: "Clone, build dependency repos, and collect assemblies into a folder"
+name: Clone & Build Dependencies
+description: Clones and builds ordered public GitHub repos, uploads assemblies as an artifact.
 
 inputs:
   dependencies:
-    description: "Ordered, comma-separated list like 'RepoA@main, RepoB, OtherOrg/RepoC@v1.2.3'"
-    required: false
-    default: ""
+    description: "Comma-separated list of repos. Format: Repo@ref or Owner/Repo@ref"
+    required: true
   configuration:
     description: "Build configuration"
     required: false
     default: "Release"
   default_org:
-    description: "Default org/owner to assume when 'Owner/' prefix is omitted"
+    description: "Org to assume when no owner prefix is given"
+    required: true
+  artifact_name:
+    description: "Name of the uploaded assemblies artifact"
     required: false
-    default: ""
-  token:
-    description: "Token with read access to private repos (falls back to GITHUB_TOKEN)"
-    required: false
-    default: ""
+    default: "deps-assemblies"
 
 runs:
-  using: "composite"
+  using: composite
   steps:
-    # Keep this small here; heavy logic is in scripts.
-    - name: Configure git auth (token for private repos)
-      shell: pwsh
-      env:
-        TOKEN: ${{ inputs.token }}
-      run: |
-        if (-not [string]::IsNullOrEmpty($env:TOKEN)) {
-          git config --global url."https://x-access-token:$($env:TOKEN)@github.com/".insteadOf "https://github.com/"
-        }
-
-    - name: Clone dependencies (ordered; same-org or cross-org)
+    - name: Clone & build
       shell: pwsh
       env:
         DEPENDENCIES: ${{ inputs.dependencies }}
-        DEFAULT_ORG: ${{ inputs.default_org }}
-        TOKEN: ${{ inputs.token }}
-      run: |
-        & "${{ github.action_path }}/scripts/Clone-Dependencies.ps1"
-
-    - name: Build dependencies
-      shell: pwsh
-      env:
         CONFIG: ${{ inputs.configuration }}
+        DEFAULT_ORG: ${{ inputs.default_org }}
       run: |
-        & "${{ github.action_path }}/scripts/Build-Dependencies.ps1"
+        $ErrorActionPreference = "Stop"
+        New-Item -ItemType Directory -Force -Path "deps" | Out-Null
 
-    - name: Collect dependency assemblies (bin/Release|Debug)
+        $list = $env:DEPENDENCIES.Split(",") |
+                  ForEach-Object { $_.Trim() } |
+                  Where-Object { $_ -ne "" }
+
+        foreach ($d in $list) {
+          $spec, $ref = if ($d -match "@") { $d.Split("@", 2) } else { $d, $null }
+          $spec = $spec.Trim()
+          $ref  = if ($ref) { $ref.Trim() } else { $null }
+
+          $owner, $repo = if ($spec.Contains("/")) {
+            $spec.Split("/", 2)
+          } else {
+            $env:DEFAULT_ORG, $spec
+          }
+
+          $path = "deps/$($owner)_$($repo)"
+
+          Write-Host "::group::Clone $owner/$repo$(if ($ref) { " @ $ref" })"
+          git clone --depth 1 --no-single-branch "https://github.com/$owner/$repo.git" $path
+          if ($LASTEXITCODE -ne 0) { throw "Failed to clone $owner/$repo" }
+
+          if ($ref) {
+            git -C $path checkout $ref
+            if ($LASTEXITCODE -ne 0) { throw "Failed to checkout '$ref' in $owner/$repo" }
+          }
+
+          Write-Host "Checked out $owner/$repo @ $(git -C $path rev-parse HEAD)"
+          Write-Host "::endgroup::"
+
+          $sln = Get-ChildItem $path -Recurse -Filter *.sln | Select-Object -First 1
+          if (-not $sln) { Write-Warning "No .sln in $path — skipping build."; continue }
+
+          Write-Host "::group::Build $owner/$repo"
+          dotnet restore $sln.FullName
+          dotnet build $sln.FullName --no-restore --configuration $env:CONFIG
+          if ($LASTEXITCODE -ne 0) { throw "Build failed for $owner/$repo" }
+          Write-Host "::endgroup::"
+        }
+
+    - name: Collect assemblies
       shell: pwsh
       run: |
-        & "${{ github.action_path }}/scripts/Collect-Assemblies.ps1"
+        New-Item -ItemType Directory -Force -Path "deps-assemblies" | Out-Null
+        Get-ChildItem -Path "deps" -Recurse -Include "*.dll" |
+          Where-Object { $_.FullName -match "\\bin\\(Release|Debug)\\" } |
+          Copy-Item -Destination "deps-assemblies" -Force
+        $count = (Get-ChildItem "deps-assemblies" -Filter "*.dll" | Measure-Object).Count
+        Write-Host "Collected $count assemblies."
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact_name }}
+        path: deps-assemblies/
+        if-no-files-found: warn 
