@@ -52,7 +52,7 @@ jobs:
           dotnet-version: ${{ inputs.dotnet_version }}
 
       - name: Prepare dependencies (composite action)
-        uses: BuroHappoldEngineeringSandbox/ci-templates/.github/actions/prepare-dependencies
+        uses: BuroHappoldEngineeringSandbox/ci-templates/.github/actions/prepare-dependencies@main
         with:
           dependencies: ${{ inputs.dependencies }}
           configuration: ${{ inputs.configuration }}
