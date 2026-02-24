@@ -1,0 +1,35 @@
+name: Stage Dependency Assemblies
+description: Downloads a deps artifact and stages DLLs to %ProgramData%\BHoM\Assemblies.
+
+inputs:
+  artifact_name:
+    description: "Artifact name to download"
+    required: false
+    default: "deps-assemblies"
+  target_path:
+    description: "Destination path for the DLLs. Defaults to %ProgramData%\\BHoM\\Assemblies"
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/download-artifact@v4
+      with:
+        name: ${{ inputs.artifact_name }}
+        path: deps-assemblies
+      continue-on-error: true
+
+    - name: Stage to target path
+      shell: pwsh
+      env:
+        TARGET: ${{ inputs.target_path }}
+      run: |
+        $target = if ($env:TARGET) { $env:TARGET } else { Join-Path $env:ProgramData "BHoM\Assemblies" }
+        New-Item -ItemType Directory -Force -Path $target | Out-Null
+        if (Test-Path "deps-assemblies") {
+          Copy-Item "deps-assemblies\*.dll" -Destination $target -Force -ErrorAction SilentlyContinue
+          Write-Host "Staged assemblies to $target"
+        } else {
+          Write-Host "No dependency assemblies to stage."
+        }
