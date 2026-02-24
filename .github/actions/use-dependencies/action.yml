@@ -1,0 +1,35 @@
+name: "Use Dependencies"
+description: "Download dependency assemblies and stage them for HintPaths"
+
+inputs:
+  artifact_name:
+    description: "Artifact name to download"
+    default: "deps-assemblies"
+  stage_dir:
+    description: "Directory to stage assemblies"
+    default: "C:\\ProgramData\\BHoM\\Assemblies"
+
+runs:
+  using: "composite"
+  steps:
+
+    - name: Download dependency assemblies
+      uses: actions/download-artifact@v4
+      with:
+        name: ${{ inputs.artifact_name }}
+        path: deps-assemblies
+      continue-on-error: true
+
+    - name: Stage assemblies
+      shell: pwsh
+      run: |
+        $src = "deps-assemblies"
+        if (-not (Test-Path $src)) {
+          Write-Host "No dependency assemblies artifact found."
+          exit 0
+        }
+
+        $target = "${{ inputs.stage_dir }}"
+        New-Item -ItemType Directory -Force -Path $target | Out-Null
+        Copy-Item -Path (Join-Path $src "*.dll") -Destination $target -Force -ErrorAction SilentlyContinue
+        Write-Host "Staged assemblies to $target"
