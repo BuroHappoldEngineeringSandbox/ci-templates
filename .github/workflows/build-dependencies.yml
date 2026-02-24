@@ -4,16 +4,9 @@ on:
   workflow_call:
     inputs:
       configuration:
-        description: "Build configuration"
-        required: false
         type: string
         default: "Release"
-
       dependencies:
-        description: >
-          Ordered, comma-separated list of repos to clone & build.
-          Supports "Repo@ref" shorthand or "Owner/Repo@ref".
-        required: false
         type: string
         default: ""
 
@@ -30,7 +23,6 @@ jobs:
   build_dependencies:
     name: Build Dependencies
     runs-on: windows-latest
-    if: ${{ inputs.dependencies != '' }}
 
     env:
       DEFAULT_ORG: ${{ github.repository_owner }}
@@ -41,25 +33,24 @@ jobs:
       artifact-name: deps-assemblies
 
     steps:
-      - name: Configure git auth
+      - name: Setup Git Authentication
         shell: pwsh
         run: |
-          if (-not [string]::IsNullOrEmpty($env:TOKEN)) {
-            git config --global url."https://x-access-token:$($env:TOKEN)@github.com/".insteadOf "https://github.com/"
+          if ($env:TOKEN) {
+            git config --global url."https://x-access-token:$env:TOKEN@github.com/".insteadOf "https://github.com/"
           }
 
-      - name: Clone dependencies
+      - name: Clone Repositories
         shell: pwsh
         env:
           DEPENDENCIES: ${{ inputs.dependencies }}
-          DEFAULT_ORG: ${{ github.repository_owner }}
           TOKEN: ${{ secrets.ORG_READ_TOKEN || github.token }}
         run: |
           $ErrorActionPreference = "Stop"
           New-Item deps -ItemType Directory -Force | Out-Null
 
-          if (-not [string]::IsNullOrWhiteSpace($env:TOKEN)) {
-            git config --global url."https://x-access-token:$($env:TOKEN)@github.com/".insteadOf "https://github.com/"
+          if ($env:TOKEN) {
+            git config --global url."https://x-access-token:$env:TOKEN@github.com/".insteadOf "https://github.com/"
           }
 
           $depsList = @()
@@ -69,9 +60,7 @@ jobs:
           }
 
           foreach ($d in $depsList) {
-            $spec = $d
-            $ref  = ""
-
+            $spec = $d; $ref = ""
             if ($d -match "@") {
               $parts = $d.Split("@",2)
               $spec  = $parts[0].Trim()
@@ -79,11 +68,9 @@ jobs:
             }
 
             if ($spec.Contains("/")) {
-              $owner = $spec.Split("/")[0]
-              $repo  = $spec.Split("/")[1]
+              $owner, $repo = $spec.Split("/")
             } else {
-              $owner = $env:DEFAULT_ORG
-              $repo  = $spec
+              $owner = $env:DEFAULT_ORG; $repo = $spec
             }
 
             $folder = "$owner`_$repo"
@@ -101,10 +88,8 @@ jobs:
             }
           }
 
-      - name: Build dependencies
+      - name: Build Solutions
         shell: pwsh
-        env:
-          CONFIG: ${{ inputs.configuration }}
         run: |
           $repos = Get-ChildItem deps -Directory
           foreach ($repoDir in $repos) {
@@ -124,7 +109,7 @@ jobs:
             Where-Object { $_.FullName -match "\\bin\\(Release|Debug)\\" } |
             Copy-Item -Destination deps-assemblies -Force
 
-      - name: Upload assemblies
+      - name: Upload Assemblies
         uses: actions/upload-artifact@v4
         with:
           name: deps-assemblies
