@@ -18,7 +18,7 @@ on:
       dependencies:
         required: false
         type: string
-        default: ""   # CSV of org/repo, e.g. "my-org/libA,my-org/libB"
+        default: ""
 
 permissions:
   contents: write
@@ -31,81 +31,94 @@ jobs:
   # ---------------------------------------------------------
   build_dependencies:
     name: Build Dependencies
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest       # ✔ Faster, unless your deps require Windows
     if: ${{ inputs.dependencies != '' }}
     outputs:
       deps_path: ${{ steps.stage.outputs.deps_path }}
 
     steps:
-      - name: Parse and validate dependency list
+      # Validate and normalize comma-separated list
+      - name: Parse dependency list
         id: parse
         shell: bash
         run: |
-          deps_raw="${{ inputs.dependencies }}"
-          if [[ -z "$deps_raw" ]]; then
-            echo "No dependencies provided"; exit 1
+          if [[ -z "${{ inputs.dependencies }}" ]]; then
+            echo "No dependencies provided."
+            exit 1
           fi
 
+          # Normalize input into array
+          deps_raw="${{ inputs.dependencies }}"
           IFS=',' read -ra deps <<< "$deps_raw"
-          valid=()
+
+          # Validate format "org/repo"
+          validated=()
           for d in "${deps[@]}"; do
-            clean="$(echo "$d" | xargs)"
+            clean=$(echo "$d" | xargs)
             if [[ ! "$clean" =~ ^[^/]+/[^/]+$ ]]; then
-              echo "Invalid dependency format: '$clean' (expected org/repo)"; exit 1
+              echo "Invalid dependency format: '$clean' (must be org/repo)"
+              exit 1
             fi
-            valid+=("$clean")
+            validated+=("$clean")
           done
 
-          echo "deps_list=${valid[*]}" >> "$GITHUB_OUTPUT"
+          echo "deps_list=${validated[*]}" >> $GITHUB_OUTPUT
 
-      - name: Clone dependency repos (public)
+      # Clone dependencies
+      - name: Clone dependency repos
         shell: bash
         run: |
-          mkdir -p deps-src
+          mkdir deps-src
           for repo in ${{ steps.parse.outputs.deps_list }}; do
             echo "Cloning $repo"
             git clone --depth 1 "https://github.com/$repo" "deps-src/${repo//\//-}" || {
-              echo "Failed to clone $repo"; exit 1; }
+              echo "Failed to clone $repo"
+              exit 1
+            }
           done
 
-      - name: Build dependencies (auto-discover .sln)
+      # Build dependencies (auto-discover .sln)
+      - name: Build dependencies
         shell: bash
         run: |
           for dir in deps-src/*; do
             echo "Building dependency in $dir"
+
             sln=$(find "$dir" -maxdepth 2 -name "*.sln" | head -n 1)
             if [[ -z "$sln" ]]; then
-              echo "No .sln found in $dir"; exit 1
+              echo "No solution file found in $dir"
+              exit 1
             fi
+
             dotnet restore "$sln"
             dotnet build "$sln" --configuration "${{ inputs.configuration }}" --no-restore
           done
 
-      - name: Stage compiled outputs (DLL/PDB/XML from bin/<Configuration>)
+      # Stage only compiled outputs (safe: only pull from bin/<config>)
+      - name: Stage assemblies
         id: stage
         shell: bash
         run: |
-          out="$PWD/deps"
+          out="deps"
           mkdir -p "$out"
-          # Copy only from bin/<Configuration> to avoid noise
+
+          # Only copy DLL/PDB/XML from bin/<config>
           find deps-src -type d -path "*bin/${{ inputs.configuration }}*" | while read folder; do
             cp -v "$folder"/*.dll "$out" 2>/dev/null || true
             cp -v "$folder"/*.pdb "$out" 2>/dev/null || true
             cp -v "$folder"/*.xml "$out" 2>/dev/null || true
           done
 
-          echo "deps_path=$out" >> "$GITHUB_OUTPUT"
+          echo "deps_path=$PWD/$out" >> $GITHUB_OUTPUT
 
   # ---------------------------------------------------------
-  # Job 1: Windows Build, Test & Coverage
-  # (Everything from PATH onward remains exactly as-is)
+  # Job 1: Windows Build, Test & Coverage (unchanged after PATH)
   # ---------------------------------------------------------
   build_and_test_windows:
     name: Build & Test (.NET on Windows)
     runs-on: windows-latest
     needs: [build_dependencies]
-    # Run if dependencies succeeded OR if there were no dependencies at all
-    if: ${{ (needs.build_dependencies.result == 'success') || (inputs.dependencies == '') }}
+    if: ${{ always() }}
 
     steps:
       - uses: actions/checkout@v4
@@ -120,15 +133,17 @@ jobs:
             **/*.csproj
             **/packages.lock.json
 
-      # Make dependency assemblies available where downstream projects expect them
+      # Inject assemblies into required ProgramData folder
       - name: Inject dependency assemblies
         if: ${{ needs.build_dependencies.outputs.deps_path != '' }}
         shell: pwsh
         run: |
           $src = "${{ needs.build_dependencies.outputs.deps_path }}"
           $dest = "C:\ProgramData\BHoM\Assemblies"
+
           Write-Host "Copying assemblies from $src to $dest"
           New-Item -ItemType Directory -Force -Path $dest | Out-Null
+
           Copy-Item "$src\*.dll" $dest -Force -ErrorAction SilentlyContinue
           Copy-Item "$src\*.pdb" $dest -Force -ErrorAction SilentlyContinue
           Copy-Item "$src\*.xml" $dest -Force -ErrorAction SilentlyContinue
