@@ -38,6 +38,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Debug list .github/actions
+        shell: pwsh
+        run: |
+          Write-Host "PWD: $(Get-Location)"
+          if (Test-Path ".github/actions") {
+            Get-ChildItem -Recurse -Path ".github/actions" | ForEach-Object { $_.FullName }
+          } else {
+            Write-Host ".github/actions does not exist"
+          }
+
       - name: Build dependencies
         uses: ./.github/actions/build-dependencies
         with:
