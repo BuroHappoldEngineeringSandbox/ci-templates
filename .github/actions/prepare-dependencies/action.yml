@@ -1,0 +1,150 @@
+name: "Prepare .NET dependency assemblies"
+description: "Clone, build dependency repos, and collect assemblies into a folder"
+inputs:
+  dependencies:
+    description: "Ordered, comma-separated list like 'RepoA@main, RepoB, OtherOrg/RepoC@v1.2.3'"
+    required: false
+    default: ""
+  configuration:
+    description: "Build configuration"
+    required: false
+    default: "Release"
+  default_org:
+    description: "Default org/owner to assume when 'Owner/' prefix is omitted"
+    required: false
+    default: ""
+  token:
+    description: "Token with read access to private repos (falls back to GITHUB_TOKEN)"
+    required: false
+    default: ""
+runs:
+  using: "composite"
+  steps:
+    - name: Configure git auth (token for private repos)
+      shell: pwsh
+      env:
+        TOKEN: ${{ inputs.token }}
+      run: |
+        if (-not [string]::IsNullOrEmpty($env:TOKEN)) {
+          git config --global url."https://x-access-token:$($env:TOKEN)@github.com/".insteadOf "https://github.com/"
+        }
+
+    - name: Clone dependencies (ordered; same-org or cross-org)
+      shell: pwsh
+      env:
+        DEPENDENCIES: ${{ inputs.dependencies }}
+        DEFAULT_ORG: ${{ inputs.default_org }}
+        TOKEN: ${{ inputs.token }}
+      run: |
+        $ErrorActionPreference = "Stop"
+        New-Item -ItemType Directory -Force -Path "deps" | Out-Null
+
+        if (-not [string]::IsNullOrWhiteSpace($env:TOKEN)) {
+          git config --global url."https://x-access-token:$($env:TOKEN)@github.com/".insteadOf "https://github.com/"
+        }
+
+        # Parse comma-separated list
+        $list = @()
+        foreach ($part in @($env:DEPENDENCIES.Split(","))) {
+          $t = $part.Trim()
+          if ($t) { $list += $t }
+        }
+
+        if ($list.Count -eq 0) {
+          Write-Host "No dependencies parsed from input."
+          exit 0
+        }
+
+        foreach ($d in $list) {
+          $spec = $d
+          $ref  = ""
+
+          if ($d -match "@") {
+            $parts = $d.Split("@",2)
+            $spec  = $parts[0].Trim()
+            $ref   = $parts[1].Trim()
+          }
+
+          if ($spec.Contains("/")) {
+            $owner = $spec.Split("/")[0]
+            $repo  = $spec.Split("/")[1]
+          } else {
+            $owner = $env:DEFAULT_ORG
+            $repo  = $spec
+          }
+
+          $folder = "$owner`_$repo"
+          $url    = "https://github.com/$owner/$repo.git"
+          $path   = "deps/$folder"
+
+          Write-Host "::group::Clone $owner/$repo $([string]::IsNullOrEmpty($ref) ? '' : "@$ref")"
+          try {
+            git ls-remote $url * > $null
+          } catch {
+            Write-Error "Cannot access $owner/$repo. Ensure token has 'contents: read'."
+            throw
+          }
+
+          try {
+            git clone --depth 1 $url $path
+          } catch {
+            Write-Error "Failed to clone $owner/$repo from $url."
+            throw
+          }
+
+          if (-not (Test-Path $path)) {
+            Write-Error "Clone target path not found: $path (clone failed)"
+            throw
+          }
+
+          if (-not [string]::IsNullOrEmpty($ref)) {
+            Push-Location $path
+            git fetch --all --tags --prune
+            try { git checkout $ref } catch {
+              Write-Error "Failed to checkout ref '$ref' in $owner/$repo."
+              throw
+            }
+            Pop-Location
+          }
+
+          Push-Location $path
+          $sha = (git rev-parse HEAD)
+          Write-Host "Checked out $owner/$repo @ $sha into $path"
+          Pop-Location
+          Write-Host "::endgroup::"
+        }
+
+    - name: Build dependencies
+      shell: pwsh
+      env:
+        CONFIG: ${{ inputs.configuration }}
+      run: |
+        $ErrorActionPreference = "Stop"
+        $repos = Get-ChildItem -Path "deps" -Directory -ErrorAction SilentlyContinue
+        if (-not $repos -or $repos.Count -eq 0) {
+          Write-Host "No cloned repositories under 'deps'. Nothing to build."
+          exit 0
+        }
+
+        foreach ($repoDir in $repos) {
+          $sln = Get-ChildItem $repoDir.FullName -Recurse -Filter *.sln -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $sln) {
+            Write-Warning "No .sln found in '$($repoDir.FullName)'. Skipping."
+            continue
+          }
+          Write-Host "::group::Restore & Build $(Split-Path -Leaf $repoDir.FullName)"
+          dotnet restore $sln.FullName
+          dotnet build $sln.FullName --configuration $env:CONFIG
+          Write-Host "::endgroup::"
+        }
+
+    - name: Collect dependency assemblies (bin/Release|Debug)
+      shell: pwsh
+      run: |
+        $out = "deps-assemblies"
+        New-Item -ItemType Directory -Force -Path $out | Out-Null
+        Get-ChildItem -Path "deps" -Recurse -Include *.dll -ErrorAction SilentlyContinue `
+          | Where-Object { $_.FullName -match "\\bin\\(Release|Debug)\\" } `
+          | Copy-Item -Destination $out -Force
+        $count = (Get-ChildItem $out -Filter *.dll -ErrorAction SilentlyContinue | Measure-Object).Count
+        Write-Host "Collected $count assemblies in '$out'."
